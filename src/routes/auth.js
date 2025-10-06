@@ -15,6 +15,57 @@ const ACCESS_TOKEN_TTL_SEC = parseInt(process.env.ACCESS_TOKEN_TTL_SEC || '3600'
 const REFRESH_TOKEN_TTL_SEC = parseInt(process.env.REFRESH_TOKEN_TTL_SEC || String(3 * 24 * 60 * 60), 10); // 3 days default
 const REFRESH_TOKEN_BCRYPT_ROUNDS = parseInt(process.env.REFRESH_TOKEN_BCRYPT_ROUNDS || '12', 10);
 
+const REFERRAL_CODE_ALPHABET = process.env.REFERRAL_CODE_ALPHABET || 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const REFERRAL_CODE_LENGTH = (() => {
+  const raw = parseInt(process.env.REFERRAL_CODE_LENGTH || '8', 10);
+  return Number.isFinite(raw) && raw >= 4 && raw <= 16 ? raw : 8;
+})();
+
+function generateReferralCode() {
+  const bytes = crypto.randomBytes(REFERRAL_CODE_LENGTH);
+  let result = '';
+  for (let i = 0; i < REFERRAL_CODE_LENGTH; i += 1) {
+    const idx = bytes[i] % REFERRAL_CODE_ALPHABET.length;
+    result += REFERRAL_CODE_ALPHABET[idx];
+  }
+  return result;
+}
+
+async function ensureReferralCode(user) {
+  if (user.referralCode) return user.referralCode;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const candidate = generateReferralCode();
+    const exists = await User.exists({ referralCode: candidate });
+    if (!exists) {
+      user.referralCode = candidate;
+      return candidate;
+    }
+  }
+  throw new Error('failed to allocate referral code');
+}
+
+function normalizeReferralCodeInput(value) {
+  return String(value || '')
+    .trim()
+    .toUpperCase();
+}
+
+function buildReferralShareLink(code) {
+  if (!code) return null;
+  const base = process.env.REFERRAL_SHARE_BASE_URL || process.env.APP_DOWNLOAD_URL || '';
+  if (!base) return null;
+  try {
+    if (base.includes('{{code}}')) {
+      return base.replace(/{{code}}/g, code);
+    }
+    const url = new URL(base);
+    url.searchParams.set('ref', code);
+    return url.toString();
+  } catch (err) {
+    return null;
+  }
+}
+
 function buildUserPayload(user) {
   return {
     id: user._id,
@@ -23,6 +74,13 @@ function buildUserPayload(user) {
     email: user.email,
     role: user.role,
     walletBalance: user.walletBalance,
+    referralCode: user.referralCode,
+    referralShareLink: buildReferralShareLink(user.referralCode),
+    referralCount: user.referralCount || 0,
+    referredBy: user.referredBy ? user.referredBy.toString() : null,
+    referralActivatedAt: user.referralActivatedAt || null,
+    hasPin: Boolean(user.pinHash),
+    pinSetAt: user.pinSetAt || null,
   };
 }
 
@@ -97,6 +155,9 @@ router.post(['/request-otp', '/requestOtp'], requestLimiter, async (req, res) =>
   try {
     const rawPhone = req.body?.phone ?? '';
     const rawName = req.body?.name ?? '';
+    const referralCodeInput = normalizeReferralCodeInput(
+      req.body?.referralCode ?? req.body?.referral ?? req.body?.refCode ?? ''
+    );
     const phoneStr = normalizeE164Loose(rawPhone);
     const name = String(rawName).trim();
 
@@ -112,6 +173,35 @@ router.post(['/request-otp', '/requestOtp'], requestLimiter, async (req, res) =>
       user = await User.create({ phone: phoneStr, name });
     } else {
       user.name = name;
+    }
+
+    await ensureReferralCode(user);
+
+    let referralApplied = false;
+    if (referralCodeInput) {
+      const referer = await User.findOne({ referralCode: referralCodeInput }).select('_id referralCode');
+      if (!referer) {
+        return res.status(400).json({ error: 'invalid referral code' });
+      }
+      if (referer._id.equals(user._id)) {
+        return res.status(400).json({ error: 'cannot use own referral code' });
+      }
+
+      const refererId = referer._id.toString();
+      const currentFinal = user.referredBy ? user.referredBy.toString() : null;
+      const currentPending = user.pendingReferredBy ? user.pendingReferredBy.toString() : null;
+
+      if (currentFinal && currentFinal !== refererId) {
+        return res.status(400).json({ error: 'referral already linked to another user' });
+      }
+      if (currentPending && currentPending !== refererId) {
+        return res.status(400).json({ error: 'referral already pending with another user' });
+      }
+
+      if (!currentFinal) {
+        user.pendingReferredBy = referer._id;
+      }
+      referralApplied = Boolean(!user.referralActivatedAt || currentFinal === refererId);
     }
 
     const otp = genOtp();
@@ -130,7 +220,13 @@ router.post(['/request-otp', '/requestOtp'], requestLimiter, async (req, res) =>
       console.log(`[OTP][DEV] Phone=${phoneStr} Code=${otp}`);
     }
 
-    return res.json({ ok: true, message: 'OTP sent' });
+    return res.json({
+      ok: true,
+      message: 'OTP sent',
+      referralCode: user.referralCode,
+      referralShareLink: buildReferralShareLink(user.referralCode),
+      referralApplied,
+    });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: 'server error' });
@@ -163,6 +259,8 @@ router.post(['/admin/request-otp', '/admin/requestOtp'], requestLimiter, async (
         user.role = 'admin';
       }
     }
+
+    await ensureReferralCode(user);
 
     const otp = genOtp();
     const hash = await bcrypt.hash(otp, 10);
@@ -213,8 +311,81 @@ router.post(['/verify-otp', '/verifyOtp'], async (req, res) => {
     user.lastLoginIp = req.ip;
     user.loginCount = (user.loginCount || 0) + 1;
 
+    await ensureReferralCode(user);
+
+    if (user.pendingReferredBy && !user.referredBy) {
+      user.referredBy = user.pendingReferredBy;
+    }
+    user.pendingReferredBy = undefined;
+
+    let refererToIncrement = null;
+    if (user.referredBy && !user.referralActivatedAt) {
+      user.referralActivatedAt = new Date();
+      refererToIncrement = user.referredBy;
+    }
+
     const tokens = await issueAuthTokens(user);
     await user.save();
+
+    if (refererToIncrement) {
+      await User.updateOne({ _id: refererToIncrement }, { $inc: { referralCount: 1 } });
+    }
+
+    return res.json({
+      token: tokens.token,
+      tokenExpiresAt: tokens.tokenExpiresAt,
+      refreshToken: tokens.refreshToken,
+      refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+      user: buildUserPayload(user),
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.post('/login-with-pin', requestLimiter, async (req, res) => {
+  try {
+    const phoneStr = normalizeE164Loose(req.body?.phone ?? '');
+    const pinStr = String(req.body?.pin ?? '').trim();
+
+    if (!isValidPhoneLoose(phoneStr) || !/^\d{4}$/.test(pinStr)) {
+      return res.status(400).json({ error: 'phone and 4-digit pin required' });
+    }
+
+    const user = await User.findOne({ phone: phoneStr });
+    if (!user || !user.pinHash) {
+      return res.status(400).json({ error: 'pin login unavailable for this account' });
+    }
+
+    const pinOk = await bcrypt.compare(pinStr, user.pinHash);
+    if (!pinOk) {
+      return res.status(400).json({ error: 'invalid pin' });
+    }
+
+    user.lastLoginAt = new Date();
+    user.lastLoginIp = req.ip;
+    user.loginCount = (user.loginCount || 0) + 1;
+
+    await ensureReferralCode(user);
+
+    if (user.pendingReferredBy && !user.referredBy) {
+      user.referredBy = user.pendingReferredBy;
+    }
+    user.pendingReferredBy = undefined;
+
+    let refererToIncrement = null;
+    if (user.referredBy && !user.referralActivatedAt) {
+      user.referralActivatedAt = new Date();
+      refererToIncrement = user.referredBy;
+    }
+
+    const tokens = await issueAuthTokens(user);
+    await user.save();
+
+    if (refererToIncrement) {
+      await User.updateOne({ _id: refererToIncrement }, { $inc: { referralCount: 1 } });
+    }
 
     return res.json({
       token: tokens.token,
@@ -263,8 +434,25 @@ router.post(['/admin/verify-otp', '/admin/verifyOtp'], async (req, res) => {
     user.lastLoginIp = req.ip;
     user.loginCount = (user.loginCount || 0) + 1;
 
+    await ensureReferralCode(user);
+
+    if (user.pendingReferredBy && !user.referredBy) {
+      user.referredBy = user.pendingReferredBy;
+    }
+    user.pendingReferredBy = undefined;
+
+    let refererToIncrement = null;
+    if (user.referredBy && !user.referralActivatedAt) {
+      user.referralActivatedAt = new Date();
+      refererToIncrement = user.referredBy;
+    }
+
     const tokens = await issueAuthTokens(user);
     await user.save();
+
+    if (refererToIncrement) {
+      await User.updateOne({ _id: refererToIncrement }, { $inc: { referralCount: 1 } });
+    }
 
     return res.json({
       token: tokens.token,
@@ -308,6 +496,8 @@ router.post('/refresh-token', async (req, res) => {
       return res.status(401).json({ error: 'invalid refresh token' });
     }
 
+    await ensureReferralCode(user);
+
     const tokens = await issueAuthTokens(user);
     await user.save();
 
@@ -324,13 +514,97 @@ router.post('/refresh-token', async (req, res) => {
   }
 });
 
+router.post('/pin', auth, async (req, res) => {
+  try {
+    const pinStr = String(req.body?.pin ?? '').trim();
+    const currentPinRaw = req.body?.currentPin;
+    const currentPinStr = typeof currentPinRaw === 'string' || typeof currentPinRaw === 'number'
+      ? String(currentPinRaw).trim()
+      : undefined;
+
+    if (!/^\d{4}$/.test(pinStr)) {
+      return res.status(400).json({ error: 'pin must be exactly 4 digits' });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ error: 'user not found' });
+    }
+
+    if (user.pinHash) {
+      if (!currentPinStr) {
+        return res.status(400).json({ error: 'current pin required to update existing pin' });
+      }
+      const currentOk = await bcrypt.compare(currentPinStr, user.pinHash);
+      if (!currentOk) {
+        return res.status(400).json({ error: 'invalid current pin' });
+      }
+    }
+
+    user.pinHash = await bcrypt.hash(pinStr, 10);
+    user.pinSetAt = new Date();
+
+    await ensureReferralCode(user);
+
+    await user.save();
+
+    return res.json({
+      ok: true,
+      pinSetAt: user.pinSetAt,
+      user: buildUserPayload(user),
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.get('/referrals', auth, async (req, res) => {
+  try {
+    const limitRaw = parseInt(req.query?.limit ?? '50', 10);
+    const offsetRaw = parseInt(req.query?.offset ?? '0', 10);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 50;
+    const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? offsetRaw : 0;
+
+    const query = { referredBy: req.user.id };
+
+    const [referrals, total] = await Promise.all([
+      User.find(query)
+        .sort({ createdAt: -1 })
+        .skip(offset)
+        .limit(limit)
+        .select('_id name phone referralCode createdAt referralActivatedAt loginCount'),
+      User.countDocuments(query),
+    ]);
+
+    return res.json({
+      total,
+      offset,
+      limit,
+      referrals: referrals.map((ref) => ({
+        id: ref._id,
+        name: ref.name,
+        phone: ref.phone,
+        referralCode: ref.referralCode,
+        referralShareLink: buildReferralShareLink(ref.referralCode),
+        createdAt: ref.createdAt,
+        referralActivatedAt: ref.referralActivatedAt,
+        loginCount: ref.loginCount || 0,
+      })),
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
 
 router.get('/admin/me', auth, admin, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ error: 'not found' });
+    await ensureReferralCode(user);
     return res.json({
-      user: { id: user._id, name: user.name, email: user.email, role: user.role, walletBalance: user.walletBalance }
+      user: buildUserPayload(user)
     });
   } catch (e) {
     console.error(e);
@@ -351,8 +625,10 @@ router.put(['/me', '/profile'], auth, async (req, res) => {
     const user = await User.findByIdAndUpdate(req.user.id, { $set: update }, { new: true });
     if (!user) return res.status(404).json({ error: 'user not found' });
 
+    await ensureReferralCode(user);
+
     return res.json({
-      user: { id: user._id, phone: user.phone, name: user.name, email: user.email, role: user.role, walletBalance: user.walletBalance }
+      user: buildUserPayload(user)
     });
   } catch (e) {
     console.error(e);

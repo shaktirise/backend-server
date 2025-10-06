@@ -1,7 +1,6 @@
 import mongoose from 'mongoose';
 
 const UserSchema = new mongoose.Schema(
- 
   {
     phone: { type: String, unique: true, sparse: true, index: true },
     email: { type: String, unique: true, sparse: true, index: true },
@@ -14,6 +13,15 @@ const UserSchema = new mongoose.Schema(
     otpExpiresAt: { type: Date },
 
     name: { type: String },
+
+    referralCode: { type: String, unique: true, sparse: true, index: true },
+    pendingReferredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    referredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
+    referralActivatedAt: { type: Date },
+    referralCount: { type: Number, default: 0 },
+
+    pinHash: { type: String },
+    pinSetAt: { type: Date },
 
     lastLoginAt: { type: Date },
     loginCount: { type: Number, default: 0 },
