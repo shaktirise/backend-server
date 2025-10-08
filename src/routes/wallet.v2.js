@@ -5,6 +5,8 @@ import mongoose from 'mongoose';
 import { auth } from '../middleware/auth.js';
 import Wallet from '../models/Wallet.js';
 import WalletLedger from '../models/WalletLedger.js';
+import { ensureWallet } from '../services/wallet.js';
+import { handleReferralTopupPayout } from '../services/referral.js';
 
 const router = express.Router();
 
@@ -23,31 +25,42 @@ function getRazorpay() {
   return razorpayInstance;
 }
 
-
 function buildShortReceipt(userId) {
-  const uid = String(userId || '').slice(-8); 
-  const ts = Date.now().toString(36); 
-  const rand = crypto.randomBytes(3).toString('hex'); 
+  const uid = String(userId || '').slice(-8);
+  const ts = Date.now().toString(36);
+  const rand = crypto.randomBytes(3).toString('hex');
   const receipt = `tu_${uid}_${ts}_${rand}`;
   return receipt.slice(0, 40);
 }
 
-async function ensureWallet(userId, session) {
-  const opts = session ? { upsert: true, new: true, setDefaultsOnInsert: true, session } : { upsert: true, new: true, setDefaultsOnInsert: true };
-  const wallet = await Wallet.findOneAndUpdate(
-    { userId },
-    { $setOnInsert: { balance: 0 } },
-    opts
-  );
-  return wallet;
-}
+const MIN_TOPUP_RUPEES = (() => {
+  const raw = Number.parseInt(process.env.MIN_TOPUP_RUPEES || '1000', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 1000;
+})();
+const MIN_TOPUP_PAISE = MIN_TOPUP_RUPEES * 100;
+
+const GST_RATE = (() => {
+  const raw = Number.parseFloat(process.env.GST_RATE || '0.18');
+  return Number.isFinite(raw) && raw >= 0 ? raw : 0.18;
+})();
+const GST_PERCENT = Math.round(GST_RATE * 100);
 
 router.use(auth);
 
 router.post('/topups/create-order', async (req, res) => {
   try {
     const userId = req.user.sub;
-    const amountInRupees = Number.isFinite(req.body?.amountInRupees) ? Number(req.body.amountInRupees) : 1000; // default ₹1000
+    const amountInRupees = Number.isFinite(req.body?.amountInRupees)
+      ? Number(req.body.amountInRupees)
+      : MIN_TOPUP_RUPEES;
+
+    if (!Number.isFinite(amountInRupees) || amountInRupees < MIN_TOPUP_RUPEES) {
+      return res.status(400).json({
+        error: 'amount_below_minimum',
+        minimumRupees: MIN_TOPUP_RUPEES,
+      });
+    }
+
     const amount = Math.round(amountInRupees * 100); // to paise
     if (!Number.isFinite(amount) || amount <= 0) {
       return res.status(400).json({ error: 'invalid amount' });
@@ -75,6 +88,7 @@ router.post('/topups/create-order', async (req, res) => {
       order_id: order.id,
       amount: order.amount,
       currency: order.currency,
+      minimumRupees: MIN_TOPUP_RUPEES,
     });
   } catch (e) {
     console.error('create-order error', e);
@@ -115,57 +129,93 @@ router.post('/topups/verify', async (req, res) => {
       console.warn('payments.fetch failed; proceeding with signature-only verification');
     }
 
+    const fallbackAmount = Number.isFinite(Number(req.body?.amount))
+      ? Math.round(Number(req.body.amount))
+      : null;
+    const creditAmount = Number.isFinite(paymentAmount) ? paymentAmount : fallbackAmount;
+    if (!Number.isFinite(creditAmount) || creditAmount <= 0) {
+      throw new Error('invalid_payment_amount');
+    }
+    if (creditAmount < MIN_TOPUP_PAISE) {
+      return res.status(400).json({
+        error: 'amount_below_minimum',
+        minimumPaise: MIN_TOPUP_PAISE,
+        minimumRupees: MIN_TOPUP_RUPEES,
+      });
+    }
+
     const session = await mongoose.startSession();
+    let referralResult = { payouts: [], activated: false };
     try {
       await session.withTransaction(async () => {
         const userId = req.user.sub;
         const wallet = await ensureWallet(userId, session);
 
-        const creditAmount = Number.isFinite(paymentAmount) ? paymentAmount : null;
-        if (!creditAmount || creditAmount <= 0) {
-          
-          throw new Error('invalid_payment_amount');
-        }
+        await Wallet.updateOne(
+          { _id: wallet._id },
+          { $inc: { balance: creditAmount } },
+          { session },
+        );
 
-        await Wallet.updateOne({ _id: wallet._id }, { $inc: { balance: creditAmount } }, { session });
-        await WalletLedger.create([
-          {
-            walletId: wallet._id,
-            type: 'TOPUP',
-            amount: creditAmount,
-            note: 'Razorpay top-up',
-            extRef: razorpay_payment_id,
-          },
-        ], { session });
+        const [ledgerEntry] = await WalletLedger.create(
+          [
+            {
+              walletId: wallet._id,
+              type: 'TOPUP',
+              amount: creditAmount,
+              note: 'Razorpay top-up',
+              extRef: razorpay_payment_id,
+              metadata: {
+                orderId: razorpay_order_id,
+              },
+            },
+          ],
+          { session },
+        );
+
+        referralResult = await handleReferralTopupPayout({
+          userId,
+          topupAmountPaise: creditAmount,
+          sourceLedger: ledgerEntry,
+          session,
+        });
       });
     } finally {
       session.endSession();
     }
 
-    return res.json({ ok: true });
+    return res.json({
+      ok: true,
+      creditedPaise: creditAmount,
+      referral: referralResult,
+    });
   } catch (e) {
     console.error('topups/verify error', e);
     if (e?.code === 11000) {
-      
       return res.json({ ok: true });
     }
     return res.status(500).json({ error: 'verification_failed' });
   }
 });
 
-// advice 100rs debit 
 router.post('/debit', async (req, res) => {
   try {
-    const amountInRupees = Number.isFinite(req.body?.amountInRupees) ? Number(req.body.amountInRupees) : 100;
+    const amountInRupees = Number.isFinite(req.body?.amountInRupees)
+      ? Number(req.body.amountInRupees)
+      : 100;
     const note = typeof req.body?.note === 'string' ? req.body.note : 'Advice purchase';
-    const amount = Math.round(amountInRupees * 100);
-    if (!Number.isFinite(amount) || amount <= 0) {
+
+    const baseAmountPaise = Math.round(amountInRupees * 100);
+    if (!Number.isFinite(baseAmountPaise) || baseAmountPaise <= 0) {
       return res.status(400).json({ error: 'invalid_amount' });
     }
 
+    const gstAmountPaise = Math.round(baseAmountPaise * GST_RATE);
+    const totalDebitPaise = baseAmountPaise + gstAmountPaise;
+
     const userId = req.user.sub;
     const wallet = await ensureWallet(userId);
-    if ((wallet.balance || 0) < amount) {
+    if ((wallet.balance || 0) < totalDebitPaise) {
       return res.status(402).json({ error: 'INSUFFICIENT_FUNDS', topupRequired: true });
     }
 
@@ -174,14 +224,31 @@ router.post('/debit', async (req, res) => {
     try {
       await session.withTransaction(async () => {
         const fresh = await Wallet.findById(wallet._id).session(session).exec();
-        if (!fresh || fresh.balance < amount) {
+        if (!fresh || fresh.balance < totalDebitPaise) {
           throw Object.assign(new Error('insufficient_funds'), { code: 'INSUFFICIENT_FUNDS' });
         }
-        newBalance = fresh.balance - amount;
-        await Wallet.updateOne({ _id: wallet._id }, { $inc: { balance: -amount } }, { session });
-        await WalletLedger.create([
-          { walletId: wallet._id, type: 'PURCHASE', amount: -amount, note }
-        ], { session });
+        newBalance = fresh.balance - totalDebitPaise;
+        await Wallet.updateOne(
+          { _id: wallet._id },
+          { $inc: { balance: -totalDebitPaise } },
+          { session },
+        );
+        await WalletLedger.create(
+          [
+            {
+              walletId: wallet._id,
+              type: 'PURCHASE',
+              amount: -totalDebitPaise,
+              note: `${note} (incl. GST ${GST_PERCENT}%)`,
+              metadata: {
+                baseAmountPaise,
+                gstAmountPaise,
+                gstRate: GST_RATE,
+              },
+            },
+          ],
+          { session },
+        );
       });
     } catch (txErr) {
       if (txErr?.code === 'INSUFFICIENT_FUNDS') {
@@ -192,13 +259,19 @@ router.post('/debit', async (req, res) => {
       session.endSession();
     }
 
-    return res.json({ ok: true, newBalancePaise: newBalance });
+    return res.json({
+      ok: true,
+      newBalancePaise: newBalance,
+      debitedPaise: totalDebitPaise,
+      baseAmountPaise,
+      gstAmountPaise,
+      gstPercent: GST_PERCENT,
+    });
   } catch (e) {
     console.error('debit error', e);
     return res.status(500).json({ error: 'debit_failed' });
   }
 });
-
 
 router.get('/balance', async (req, res) => {
   try {
@@ -212,3 +285,4 @@ router.get('/balance', async (req, res) => {
 });
 
 export default router;
+
