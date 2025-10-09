@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import mongoose from 'mongoose';
 import User from '../models/User.js';
 import ReferralLedger from '../models/ReferralLedger.js';
+import ReferralWithdrawalRequest from '../models/ReferralWithdrawalRequest.js';
 import { auth, admin } from '../middleware/auth.js';
 import {
   ensureReferralCode,
@@ -80,6 +81,23 @@ function buildUserPayload(user) {
     referredBy: user.referredBy ? user.referredBy.toString() : null,
     pendingReferredBy: user.pendingReferredBy ? user.pendingReferredBy.toString() : null,
     lastLoginAt: user.lastLoginAt || null,
+  };
+}
+
+function serializeWithdrawalRequest(doc) {
+  if (!doc) return null;
+  return {
+    id: doc._id,
+    amountPaise: doc.amountPaise,
+    amountRupees: Number.isFinite(doc.amountPaise) ? Math.floor(doc.amountPaise / 100) : 0,
+    status: doc.status,
+    note: doc.note || null,
+    adminNote: doc.adminNote || null,
+    ledgerCount: Array.isArray(doc.ledgerEntryIds) ? doc.ledgerEntryIds.length : 0,
+    processedAt: doc.processedAt || null,
+    processedBy: doc.processedBy ? doc.processedBy.toString() : null,
+    createdAt: doc.createdAt,
+    updatedAt: doc.updatedAt,
   };
 }
 
@@ -481,7 +499,7 @@ router.get('/referrals/earnings', auth, async (req, res) => {
   try {
     const entries = await ReferralLedger.find({ userId: req.user.id })
       .sort({ createdAt: -1 })
-      .select('amountPaise note createdAt status level sourceUserId topupExtRef')
+      .select('amountPaise note createdAt status level sourceUserId topupExtRef withdrawalRequestId')
       .lean();
 
     const totals = entries.reduce(
@@ -514,10 +532,100 @@ router.get('/referrals/earnings', auth, async (req, res) => {
         sourceUserId: entry.sourceUserId ? entry.sourceUserId.toString() : null,
         createdAt: entry.createdAt,
         topupExtRef: entry.topupExtRef || null,
+        withdrawalRequestId: entry.withdrawalRequestId || null,
       })),
     });
   } catch (err) {
     console.error('referral earnings error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.post('/referrals/withdraw', auth, async (req, res) => {
+  const userId = req.user.id;
+  const note = typeof req.body?.note === 'string' && req.body.note.trim() ? req.body.note.trim() : undefined;
+  try {
+    const existing = await ReferralWithdrawalRequest.findOne({ userId, status: 'pending' }).lean();
+    if (existing) {
+      return res.status(409).json({
+        error: 'withdrawal_pending',
+        requestId: existing._id,
+      });
+    }
+
+    const session = await mongoose.startSession();
+    let createdRequest = null;
+    try {
+      await session.withTransaction(async () => {
+        const pendingEntries = await ReferralLedger.find({ userId, status: 'pending' })
+          .session(session)
+          .select('_id amountPaise')
+          .lean();
+
+        if (!pendingEntries.length) {
+          const err = new Error('NO_PENDING_COMMISSIONS');
+          err.code = 'NO_PENDING_COMMISSIONS';
+          throw err;
+        }
+
+        const amountPaise = pendingEntries.reduce((sum, entry) => sum + (entry.amountPaise || 0), 0);
+        if (amountPaise <= 0) {
+          const err = new Error('NO_PENDING_COMMISSIONS');
+          err.code = 'NO_PENDING_COMMISSIONS';
+          throw err;
+        }
+
+        const ledgerEntryIds = pendingEntries.map((entry) => entry._id);
+
+        const [requestDoc] = await ReferralWithdrawalRequest.create(
+          [
+            {
+              userId,
+              amountPaise,
+              note,
+              ledgerEntryIds,
+            },
+          ],
+          { session },
+        );
+
+        await ReferralLedger.updateMany(
+          { _id: { $in: ledgerEntryIds } },
+          { $set: { status: 'requested', withdrawalRequestId: requestDoc._id } },
+          { session },
+        );
+
+        createdRequest = requestDoc.toObject();
+      });
+    } catch (err) {
+      if (err?.code === 'NO_PENDING_COMMISSIONS') {
+        return res.status(400).json({ error: 'no_commission_available' });
+      }
+      throw err;
+    } finally {
+      await session.endSession();
+    }
+
+    return res.status(201).json({ request: serializeWithdrawalRequest(createdRequest) });
+  } catch (err) {
+    console.error('referral withdraw error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.get('/referrals/withdrawals', auth, async (req, res) => {
+  try {
+    const limitRaw = Number.parseInt(req.query?.limit ?? '20', 10);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 100) : 20;
+    const requests = await ReferralWithdrawalRequest.find({ userId: req.user.id })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    return res.json({
+      items: requests.map(serializeWithdrawalRequest),
+    });
+  } catch (err) {
+    console.error('referral withdrawals list error', err);
     return res.status(500).json({ error: 'server error' });
   }
 });
@@ -551,11 +659,12 @@ router.patch('/admin/referrals/:entryId/status', auth, admin, async (req, res) =
       return res.status(400).json({ error: 'invalid entry id' });
     }
 
-    const entry = await ReferralLedger.findByIdAndUpdate(
-      entryId,
-      { status },
-      { new: true },
-    ).lean();
+    const updateOps = { $set: { status } };
+    if (status === 'pending') {
+      updateOps.$unset = { withdrawalRequestId: '' };
+    }
+
+    const entry = await ReferralLedger.findByIdAndUpdate(entryId, updateOps, { new: true }).lean();
 
     if (!entry) {
       return res.status(404).json({ error: 'not found' });

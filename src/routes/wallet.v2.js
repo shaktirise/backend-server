@@ -7,6 +7,7 @@ import Wallet from '../models/Wallet.js';
 import WalletLedger from '../models/WalletLedger.js';
 import { ensureWallet } from '../services/wallet.js';
 import { handleReferralTopupPayout } from '../services/referral.js';
+import Purchase from '../models/Purchase.js';
 
 const router = express.Router();
 
@@ -44,6 +45,14 @@ const GST_RATE = (() => {
   return Number.isFinite(raw) && raw >= 0 ? raw : 0.18;
 })();
 const GST_PERCENT = Math.round(GST_RATE * 100);
+
+function parsePagination(query) {
+  const limitRaw = Number.parseInt(query?.limit ?? '25', 10);
+  const pageRaw = Number.parseInt(query?.page ?? '1', 10);
+  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 25;
+  const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
+  return { limit, page, skip: (page - 1) * limit };
+}
 
 router.use(auth);
 
@@ -161,6 +170,7 @@ router.post('/topups/verify', async (req, res) => {
           [
             {
               walletId: wallet._id,
+              userId: wallet.userId || userId,
               type: 'TOPUP',
               amount: creditAmount,
               note: 'Razorpay top-up',
@@ -203,7 +213,7 @@ router.post('/debit', async (req, res) => {
     const amountInRupees = Number.isFinite(req.body?.amountInRupees)
       ? Number(req.body.amountInRupees)
       : 100;
-    const note = typeof req.body?.note === 'string' ? req.body.note : 'Advice purchase';
+    let note = typeof req.body?.note === 'string' ? req.body.note : 'Advice purchase';
 
     const baseAmountPaise = Math.round(amountInRupees * 100);
     if (!Number.isFinite(baseAmountPaise) || baseAmountPaise <= 0) {
@@ -219,8 +229,53 @@ router.post('/debit', async (req, res) => {
       return res.status(402).json({ error: 'INSUFFICIENT_FUNDS', topupRequired: true });
     }
 
+    const rawCall =
+      (req.body && typeof req.body.call === 'object' && req.body.call !== null && req.body.call) ||
+      (req.body && typeof req.body.purchase === 'object' && req.body.purchase !== null && req.body.purchase) ||
+      null;
+
+    let adviceObjectId = null;
+    let callMetadata = null;
+    if (rawCall) {
+      if (typeof rawCall.note === 'string' && rawCall.note.trim()) {
+        note = rawCall.note.trim();
+      }
+      callMetadata = {};
+      const adviceIdCandidate = rawCall.adviceId || rawCall.id;
+      if (adviceIdCandidate && mongoose.Types.ObjectId.isValid(adviceIdCandidate)) {
+        adviceObjectId = new mongoose.Types.ObjectId(adviceIdCandidate);
+        callMetadata.adviceId = adviceObjectId.toString();
+      } else if (adviceIdCandidate) {
+        callMetadata.adviceId = String(adviceIdCandidate);
+      }
+      if (rawCall.title || rawCall.name) {
+        callMetadata.title = String(rawCall.title || rawCall.name);
+      }
+      if (rawCall.category || rawCall.segment) {
+        callMetadata.category = String(rawCall.category || rawCall.segment);
+      }
+      if (rawCall.pricePaise !== undefined) {
+        const pricePaise = Number(rawCall.pricePaise);
+        if (Number.isFinite(pricePaise)) {
+          callMetadata.pricePaise = Math.round(pricePaise);
+        }
+      } else if (rawCall.price !== undefined) {
+        const price = Number(rawCall.price);
+        if (Number.isFinite(price)) {
+          callMetadata.pricePaise = Math.round(price * 100);
+        }
+      }
+      if (rawCall.metadata && typeof rawCall.metadata === 'object') {
+        callMetadata.details = rawCall.metadata;
+      }
+      if (Object.keys(callMetadata).length === 0) {
+        callMetadata = null;
+      }
+    }
+
     const session = await mongoose.startSession();
     let newBalance = wallet.balance;
+    let createdPurchase = null;
     try {
       await session.withTransaction(async () => {
         const fresh = await Wallet.findById(wallet._id).session(session).exec();
@@ -233,22 +288,55 @@ router.post('/debit', async (req, res) => {
           { $inc: { balance: -totalDebitPaise } },
           { session },
         );
-        await WalletLedger.create(
+        const ledgerMetadata = {
+          baseAmountPaise,
+          gstAmountPaise,
+          gstRate: GST_RATE,
+        };
+        if (callMetadata) {
+          ledgerMetadata.call = callMetadata;
+        }
+
+        const [ledgerEntry] = await WalletLedger.create(
           [
             {
               walletId: wallet._id,
+              userId,
               type: 'PURCHASE',
               amount: -totalDebitPaise,
               note: `${note} (incl. GST ${GST_PERCENT}%)`,
-              metadata: {
-                baseAmountPaise,
-                gstAmountPaise,
-                gstRate: GST_RATE,
-              },
+              metadata: ledgerMetadata,
             },
           ],
           { session },
         );
+
+        const purchaseDoc = {
+          user: userId,
+          advice: adviceObjectId || undefined,
+          amount: Math.round(totalDebitPaise / 100),
+          amountPaise: totalDebitPaise,
+          note,
+          category: callMetadata?.category,
+          title: callMetadata?.title,
+          walletLedgerId: ledgerEntry._id,
+          metadata: {
+            baseAmountPaise,
+            gstAmountPaise,
+            gstPercent: GST_PERCENT,
+            ledgerId: ledgerEntry._id,
+            call: callMetadata || undefined,
+          },
+        };
+        if (!purchaseDoc.category && rawCall?.category) {
+          purchaseDoc.category = String(rawCall.category);
+        }
+        if (!purchaseDoc.title && rawCall?.name) {
+          purchaseDoc.title = String(rawCall.name);
+        }
+
+        const [purchaseEntry] = await Purchase.create([purchaseDoc], { session });
+        createdPurchase = purchaseEntry;
       });
     } catch (txErr) {
       if (txErr?.code === 'INSUFFICIENT_FUNDS') {
@@ -266,10 +354,57 @@ router.post('/debit', async (req, res) => {
       baseAmountPaise,
       gstAmountPaise,
       gstPercent: GST_PERCENT,
+      purchaseId: createdPurchase?._id || null,
     });
   } catch (e) {
     console.error('debit error', e);
     return res.status(500).json({ error: 'debit_failed' });
+  }
+});
+
+router.get('/history', async (req, res) => {
+  try {
+    const userId = req.user.sub;
+    const { limit, page, skip } = parsePagination(req.query);
+
+    const [itemsRaw, total] = await Promise.all([
+      Purchase.find({ user: userId })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('advice', 'category price createdAt text')
+        .lean(),
+      Purchase.countDocuments({ user: userId }),
+    ]);
+
+    const items = itemsRaw.map((purchase) => {
+      const amountPaise = Number.isFinite(purchase.amountPaise)
+        ? purchase.amountPaise
+        : Number.isFinite(purchase.amount)
+          ? Math.round(purchase.amount * 100)
+          : 0;
+      return {
+        id: purchase._id,
+        createdAt: purchase.createdAt,
+        amountPaise,
+        amountRupees: Math.floor(amountPaise / 100),
+        note: purchase.note || null,
+        category: purchase.category || purchase.advice?.category || null,
+        title: purchase.title || purchase.advice?.text || null,
+        adviceId: purchase.advice?._id || purchase.advice || null,
+        metadata: purchase.metadata || null,
+      };
+    });
+
+    return res.json({
+      page,
+      limit,
+      total,
+      items,
+    });
+  } catch (err) {
+    console.error('wallet history error', err);
+    return res.status(500).json({ error: 'history_failed' });
   }
 });
 
@@ -285,4 +420,3 @@ router.get('/balance', async (req, res) => {
 });
 
 export default router;
-

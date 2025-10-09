@@ -11,10 +11,11 @@ const ReferralLedgerSchema = new Schema(
     note: { type: String },
     status: {
       type: String,
-      enum: ['pending', 'paid', 'cancelled'],
+      enum: ['pending', 'requested', 'paid', 'cancelled'],
       default: 'pending',
       index: true,
     },
+    withdrawalRequestId: { type: Schema.Types.ObjectId, ref: 'ReferralWithdrawalRequest', index: true },
     topupLedgerId: { type: Schema.Types.ObjectId, ref: 'WalletLedger' },
     topupExtRef: { type: String },
   },
@@ -23,6 +24,6 @@ const ReferralLedgerSchema = new Schema(
 
 ReferralLedgerSchema.index({ userId: 1, status: 1, createdAt: -1 });
 ReferralLedgerSchema.index({ topupExtRef: 1, level: 1, userId: 1 }, { unique: true, sparse: true });
+ReferralLedgerSchema.index({ withdrawalRequestId: 1, status: 1 });
 
 export default mongoose.model('ReferralLedger', ReferralLedgerSchema);
-

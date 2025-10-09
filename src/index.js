@@ -15,6 +15,7 @@ import adviceRoutes from './routes/advice.js';
 import walletRoutes from './routes/wallet.v2.js';
 import segmentRoutes from './routes/segments.js';
 import imageRoutes from './routes/images.js';
+import adminDashboardRoutes from './routes/admin.dashboard.js';
 import Wallet from './models/Wallet.js';
 import WalletLedger from './models/WalletLedger.js';
 
@@ -100,7 +101,14 @@ app.post('/api/webhooks/razorpay', bodyParser.raw({ type: '*/*' }), async (req, 
 
               await Wallet.updateOne({ _id: wallet._id }, { $inc: { balance: amount } }, { session });
               await WalletLedger.create([
-                { walletId: wallet._id, type: 'TOPUP', amount, note: 'Razorpay top-up (webhook)', extRef: paymentId },
+                {
+                  walletId: wallet._id,
+                  userId: wallet.userId || userId,
+                  type: 'TOPUP',
+                  amount,
+                  note: 'Razorpay top-up (webhook)',
+                  extRef: paymentId,
+                },
               ], { session });
             });
           } finally {
@@ -136,6 +144,7 @@ app.use(
 app.get('/', (req, res) => res.json({ ok: true, service: 'trade-advice-api', uptime: process.uptime() }));
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 app.use('/api/auth', authRoutes);
+app.use('/api/admin', adminDashboardRoutes);
 app.use('/api/advice', adviceRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/segments', segmentRoutes);

@@ -52,7 +52,15 @@ router.post('/:id/unlock', auth, async (req, res) => {
     user.walletBalance -= price;
     await user.save();
 
-    await Purchase.create({ user: user._id, advice: advice._id, amount: price });
+    await Purchase.create({
+      user: user._id,
+      advice: advice._id,
+      amount: price,
+      amountPaise: Math.round(price * 100),
+      note: 'Advice unlock',
+      category: advice.category,
+      title: advice.text?.slice(0, 120) || advice.category,
+    });
 
     return res.json({ advice: { id: advice._id, category: advice.category, text: advice.text, createdAt: advice.createdAt, price: advice.price }, walletBalance: user.walletBalance });
   } catch (e) {
