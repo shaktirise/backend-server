@@ -204,8 +204,8 @@ router.post('/upload', auth, admin, runMultipart, async (req, res) => {
         hint: 'Send multipart/form-data with field "files" (one per image) or JSON body with base64 strings.',
       });
     }
-    if (normalizedInputs.length > 3) {
-      return res.status(400).json({ error: 'too_many_files', max: 3 });
+    if (normalizedInputs.length > 10) {
+      return res.status(400).json({ error: 'too_many_files', max: 10 });
     }
 
     const uploads = [];
