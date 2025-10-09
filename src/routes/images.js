@@ -20,6 +20,86 @@ const upload = multer({
   },
 });
 
+const FILE_FIELD_CONFIG = [
+  { name: 'files', maxCount: 5 },
+  { name: 'file', maxCount: 5 },
+  { name: 'images', maxCount: 5 },
+  { name: 'image', maxCount: 5 },
+];
+
+const multipartUpload = upload.fields(FILE_FIELD_CONFIG);
+
+function runMultipart(req, res, next) {
+  multipartUpload(req, res, (err) => {
+    if (!err) return next();
+
+    if (err?.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({
+        error: 'file_too_large',
+        maxBytes: MAX_UPLOAD_BYTES,
+      });
+    }
+
+    if (err?.code === 'LIMIT_UNEXPECTED_FILE') {
+      return res.status(400).json({
+        error: 'unexpected_file_field',
+        field: err.field,
+      });
+    }
+
+    console.error('multer parse images error', err);
+    return res.status(400).json({ error: 'invalid_multipart' });
+  });
+}
+
+function flattenUploadedFiles(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.filter(Boolean);
+  if (typeof raw === 'object') {
+    return Object.values(raw)
+      .flat()
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function coerceBodyItems(value) {
+  const out = [];
+  const visit = (item) => {
+    if (item === undefined || item === null) return;
+    if (Array.isArray(item)) {
+      item.forEach(visit);
+      return;
+    }
+    if (typeof item === 'string') {
+      const trimmed = item.trim();
+      if (!trimmed) return;
+      if (
+        (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
+        (trimmed.startsWith('{') && trimmed.endsWith('}'))
+      ) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          visit(parsed);
+          return;
+        } catch (e) {
+          // fall back to treating the value as a plain string
+        }
+      }
+      out.push(trimmed);
+      return;
+    }
+    if (typeof item === 'object') {
+      out.push(item);
+      return;
+    }
+    out.push(String(item));
+  };
+
+  visit(value);
+  return out;
+}
+
 function parseCloudinaryUrl(url) {
   try {
     const u = new URL(url);
@@ -83,26 +163,31 @@ router.post('/signature', auth, admin, (req, res) => {
   }
 });
 
-router.post('/upload', auth, admin, upload.any(), async (req, res) => {
+router.post('/upload', auth, admin, runMultipart, async (req, res) => {
   try {
     const normalizedInputs = [];
 
-    if (Array.isArray(req.files) && req.files.length) {
-      for (const file of req.files) {
-        if (!file?.buffer?.length) continue;
+    const uploadedFiles = flattenUploadedFiles(req.files);
+    if (req.file) uploadedFiles.push(req.file);
+
+    if (uploadedFiles.length) {
+      for (const file of uploadedFiles) {
+        const buffer = file?.buffer;
+        if (!buffer || !buffer.length) continue;
         const mime = file.mimetype || 'application/octet-stream';
-        const base64 = file.buffer.toString('base64');
+        const base64 = buffer.toString('base64');
         normalizedInputs.push({ file: `data:${mime};base64,${base64}` });
       }
     }
 
-    const rawInput = Array.isArray(req.body?.files)
-      ? req.body.files
-      : req.body?.file !== undefined
-        ? [req.body.file]
-        : [];
+    const bodyKeys = ['files', 'file', 'images', 'image'];
+    const bodyPayload = bodyKeys.reduce((acc, key) => {
+      if (req.body?.[key] === undefined) return acc;
+      acc.push(...coerceBodyItems(req.body[key]));
+      return acc;
+    }, []);
 
-    for (const input of rawInput) {
+    for (const input of bodyPayload) {
       if (input === undefined || input === null) continue;
       if (typeof input === 'string') {
         normalizedInputs.push({ file: input });
@@ -116,7 +201,7 @@ router.post('/upload', auth, admin, upload.any(), async (req, res) => {
     if (!normalizedInputs.length) {
       return res.status(400).json({
         error: 'files required',
-        hint: 'Send multipart/form-data with field "files" or JSON body with base64 strings.',
+        hint: 'Send multipart/form-data with field "files" (one per image) or JSON body with base64 strings.',
       });
     }
     if (normalizedInputs.length > 3) {
