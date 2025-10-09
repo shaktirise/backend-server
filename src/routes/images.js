@@ -71,31 +71,34 @@ router.post('/signature', auth, admin, (req, res) => {
 
 router.post('/upload', auth, admin, async (req, res) => {
   try {
-    const filesInput = Array.isArray(req.body?.files)
+    const rawInput = Array.isArray(req.body?.files)
       ? req.body.files
-      : req.body?.file
+      : req.body?.file !== undefined
         ? [req.body.file]
         : [];
 
-    if (!filesInput.length) {
-      return res.status(400).json({ error: 'files required', hint: 'Send array "files" with up to 3 items.' });
+    if (!rawInput.length) {
+      return res.status(400).json({ error: 'files required', hint: 'Send base64 string or array in "files".' });
     }
-    if (filesInput.length > 3) {
+    if (rawInput.length > 3) {
       return res.status(400).json({ error: 'too_many_files', max: 3 });
     }
 
     const uploads = [];
-    for (const item of filesInput) {
-      if (!item || typeof item !== 'object') {
-        return res.status(400).json({ error: 'invalid file payload' });
-      }
+    for (const input of rawInput) {
+      const item = (input && typeof input === 'object' && !Array.isArray(input))
+        ? input
+        : { file: input };
+
       const fileContent = typeof item.file === 'string'
         ? item.file
         : typeof item.data === 'string'
           ? item.data
           : typeof item.image === 'string'
             ? item.image
-            : null;
+            : typeof input === 'string'
+              ? input
+              : null;
       if (!fileContent || !fileContent.trim()) {
         return res.status(400).json({ error: 'file content required' });
       }
