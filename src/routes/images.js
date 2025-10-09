@@ -2,6 +2,7 @@ import express from 'express';
 import crypto from 'crypto';
 import { auth, admin } from '../middleware/auth.js';
 import Image from '../models/Image.js';
+import { uploadImage } from '../services/cloudinary.js';
 
 const router = express.Router();
 
@@ -19,7 +20,7 @@ function parseCloudinaryUrl(url) {
   }
 }
 
-function loadCloudinaryConfig() {L
+function loadCloudinaryConfig() {
   const explicit = {
     cloudName: process.env.CLOUDINARY_CLOUD_NAME,
     apiKey: process.env.CLOUDINARY_API_KEY,
@@ -64,6 +65,115 @@ router.post('/signature', auth, admin, (req, res) => {
     });
   } catch (err) {
     console.error('signature error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.post('/upload', auth, admin, async (req, res) => {
+  try {
+    const filesInput = Array.isArray(req.body?.files)
+      ? req.body.files
+      : req.body?.file
+        ? [req.body.file]
+        : [];
+
+    if (!filesInput.length) {
+      return res.status(400).json({ error: 'files required', hint: 'Send array "files" with up to 3 items.' });
+    }
+    if (filesInput.length > 3) {
+      return res.status(400).json({ error: 'too_many_files', max: 3 });
+    }
+
+    const uploads = [];
+    for (const item of filesInput) {
+      if (!item || typeof item !== 'object') {
+        return res.status(400).json({ error: 'invalid file payload' });
+      }
+      const fileContent = typeof item.file === 'string'
+        ? item.file
+        : typeof item.data === 'string'
+          ? item.data
+          : typeof item.image === 'string'
+            ? item.image
+            : null;
+      if (!fileContent || !fileContent.trim()) {
+        return res.status(400).json({ error: 'file content required' });
+      }
+
+      let uploaded;
+      try {
+        uploaded = await uploadImage({
+          file: fileContent,
+          folder: item.folder,
+          publicId: item.publicId,
+          mimeType: item.mimeType,
+        });
+      } catch (err) {
+        const message = err?.message || '';
+        if (message.includes('cloudinary_not_configured')) {
+          return res.status(503).json({ error: 'cloudinary_not_configured' });
+        }
+        console.error('cloudinary upload error', err);
+        return res.status(502).json({ error: 'upload_failed' });
+      }
+
+      const tags = Array.isArray(item.tags) ? item.tags : [];
+      uploads.push({
+        api: uploaded,
+        tags,
+      });
+    }
+
+    if (!uploads.length) {
+      return res.status(400).json({ error: 'no valid files' });
+    }
+
+    const docsPayload = uploads.map(({ api, tags }) => ({
+      publicId: api.publicId,
+      secureUrl: api.url,
+      url: api.url,
+      width: api.width,
+      height: api.height,
+      format: api.format,
+      bytes: api.bytes,
+      folder: api.folder,
+      tags,
+      createdBy: req.user?.id || null,
+    }));
+
+    const created = await Image.insertMany(docsPayload);
+
+    const io = req.app.get('io');
+    if (io && created.length) {
+      io.emit(
+        'images:new',
+        created.map((d) => ({
+          id: String(d._id),
+          url: d.secureUrl || d.url,
+          createdAt: d.createdAt,
+        })),
+      );
+    }
+
+    return res.status(201).json({
+      ok: true,
+      count: created.length,
+      items: created.map((d) => ({
+        id: String(d._id),
+        publicId: d.publicId,
+        secureUrl: d.secureUrl,
+        url: d.url,
+        width: d.width,
+        height: d.height,
+        format: d.format,
+        bytes: d.bytes,
+        folder: d.folder,
+        tags: d.tags,
+        createdAt: d.createdAt,
+      })),
+    });
+  } catch (err) {
+    console.error('admin upload images error', err);
     return res.status(500).json({ error: 'server error' });
   }
 });
