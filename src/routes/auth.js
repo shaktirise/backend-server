@@ -191,15 +191,9 @@ router.post('/login', requestLimiter, async (req, res) => {
 
 router.post('/admin/signup', requestLimiter, async (req, res) => {
   try {
-    const { name, email, password, confirmPassword, adminSecret } = req.body || {};
-    const expectedSecret = process.env.ADMIN_SIGNUP_SECRET;
-    if (!expectedSecret) {
-      return res.status(503).json({ error: 'admin signup disabled' });
-    }
-    if (adminSecret !== expectedSecret) {
-      return res.status(403).json({ error: 'invalid admin secret' });
-    }
-
+    const { name, email, password } = req.body || {};
+    const confirmPassword =
+      req.body?.confirmPassword ?? req.body?.confirmPass ?? req.body?.confirmpass;
     if (!isValidName(name)) {
       return res.status(400).json({ error: 'valid name required' });
     }
