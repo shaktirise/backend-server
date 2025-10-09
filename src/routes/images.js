@@ -10,27 +10,21 @@ const router = express.Router();
 const MAX_UPLOAD_BYTES = (() => {
   const raw = Number.parseInt(process.env.IMAGE_UPLOAD_MAX_BYTES || '', 10);
   if (Number.isFinite(raw) && raw > 0) return raw;
-  return 5 * 1024 * 1024; // 5MB default
+  return null;
 })();
 
-const upload = multer({
+const multerOptions = {
   storage: multer.memoryStorage(),
-  limits: {
-    fileSize: MAX_UPLOAD_BYTES,
-  },
-});
+};
+if (MAX_UPLOAD_BYTES) {
+  multerOptions.limits = { fileSize: MAX_UPLOAD_BYTES };
+}
+const upload = multer(multerOptions);
 
-const FILE_FIELD_CONFIG = [
-  { name: 'files', maxCount: 5 },
-  { name: 'file', maxCount: 5 },
-  { name: 'images', maxCount: 5 },
-  { name: 'image', maxCount: 5 },
-];
+const uploadAny = upload.any();
 
-const multipartUpload = upload.fields(FILE_FIELD_CONFIG);
-
-function runMultipart(req, res, next) {
-  multipartUpload(req, res, (err) => {
+function runUpload(req, res, next) {
+  uploadAny(req, res, (err) => {
     if (!err) return next();
 
     if (err?.code === 'LIMIT_FILE_SIZE') {
@@ -50,17 +44,6 @@ function runMultipart(req, res, next) {
     console.error('multer parse images error', err);
     return res.status(400).json({ error: 'invalid_multipart' });
   });
-}
-
-function flattenUploadedFiles(raw) {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw.filter(Boolean);
-  if (typeof raw === 'object') {
-    return Object.values(raw)
-      .flat()
-      .filter(Boolean);
-  }
-  return [];
 }
 
 function coerceBodyItems(value) {
@@ -163,15 +146,12 @@ router.post('/signature', auth, admin, (req, res) => {
   }
 });
 
-router.post('/upload', auth, admin, runMultipart, async (req, res) => {
+router.post('/upload', auth, admin, runUpload, async (req, res) => {
   try {
     const normalizedInputs = [];
 
-    const uploadedFiles = flattenUploadedFiles(req.files);
-    if (req.file) uploadedFiles.push(req.file);
-
-    if (uploadedFiles.length) {
-      for (const file of uploadedFiles) {
+    if (Array.isArray(req.files) && req.files.length) {
+      for (const file of req.files) {
         const buffer = file?.buffer;
         if (!buffer || !buffer.length) continue;
         const mime = file.mimetype || 'application/octet-stream';
@@ -203,9 +183,6 @@ router.post('/upload', auth, admin, runMultipart, async (req, res) => {
         error: 'files required',
         hint: 'Send multipart/form-data with field "files" (one per image) or JSON body with base64 strings.',
       });
-    }
-    if (normalizedInputs.length > 10) {
-      return res.status(400).json({ error: 'too_many_files', max: 10 });
     }
 
     const uploads = [];
