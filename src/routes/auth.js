@@ -3,9 +3,9 @@ import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import mongoose from 'mongoose';
 import User from '../models/User.js';
-import Wallet from '../models/Wallet.js';
-import WalletLedger from '../models/WalletLedger.js';
+import ReferralLedger from '../models/ReferralLedger.js';
 import { auth, admin } from '../middleware/auth.js';
 import {
   ensureReferralCode,
@@ -165,7 +165,7 @@ router.post('/login', requestLimiter, async (req, res) => {
     }
 
     const user = await User.findOne({ email });
-    if (!user || !user.passwordHash) {
+    if (!user || !user.passwordHash || user.role !== 'user') {
       return res.status(401).json({ error: 'invalid credentials' });
     }
 
@@ -185,6 +185,94 @@ router.post('/login', requestLimiter, async (req, res) => {
     });
   } catch (err) {
     console.error('login error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.post('/admin/signup', requestLimiter, async (req, res) => {
+  try {
+    const { name, email, password, confirmPassword, adminSecret } = req.body || {};
+    const expectedSecret = process.env.ADMIN_SIGNUP_SECRET;
+    if (!expectedSecret) {
+      return res.status(503).json({ error: 'admin signup disabled' });
+    }
+    if (adminSecret !== expectedSecret) {
+      return res.status(403).json({ error: 'invalid admin secret' });
+    }
+
+    if (!isValidName(name)) {
+      return res.status(400).json({ error: 'valid name required' });
+    }
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ error: 'valid email required' });
+    }
+    if (!isValidPassword(password)) {
+      return res.status(400).json({ error: 'password must be 8-128 chars' });
+    }
+    if (password !== confirmPassword) {
+      return res.status(400).json({ error: 'passwords do not match' });
+    }
+
+    const emailNorm = String(email).trim().toLowerCase();
+    const exists = await User.findOne({ email: emailNorm });
+    if (exists) {
+      return res.status(409).json({ error: 'email already registered' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+    const user = new User({
+      name: String(name).trim(),
+      email: emailNorm,
+      passwordHash,
+      role: 'admin',
+    });
+
+    await user.save();
+
+    const tokens = await finalizeAuthSuccess(user, req);
+
+    return res.status(201).json({
+      token: tokens.token,
+      tokenExpiresAt: tokens.tokenExpiresAt,
+      refreshToken: tokens.refreshToken,
+      refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+      user: buildUserPayload(user),
+    });
+  } catch (err) {
+    console.error('admin signup error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.post('/admin/login', requestLimiter, async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
+    if (!isValidEmail(email) || !password) {
+      return res.status(400).json({ error: 'email and password required' });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user || !user.passwordHash || user.role !== 'admin') {
+      return res.status(401).json({ error: 'invalid credentials' });
+    }
+
+    const ok = await bcrypt.compare(password, user.passwordHash);
+    if (!ok) {
+      return res.status(401).json({ error: 'invalid credentials' });
+    }
+
+    const tokens = await finalizeAuthSuccess(user, req);
+
+    return res.json({
+      token: tokens.token,
+      tokenExpiresAt: tokens.tokenExpiresAt,
+      refreshToken: tokens.refreshToken,
+      refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+      user: buildUserPayload(user),
+    });
+  } catch (err) {
+    console.error('admin login error', err);
     return res.status(500).json({ error: 'server error' });
   }
 });
@@ -397,26 +485,41 @@ router.get('/referrals/tree', auth, async (req, res) => {
 
 router.get('/referrals/earnings', auth, async (req, res) => {
   try {
-    const wallet = await Wallet.findOne({ userId: req.user.id }).select('_id');
-    if (!wallet) {
-      return res.json({ totalEarnedPaise: 0, entries: [] });
-    }
-
-    const entries = await WalletLedger.find({ walletId: wallet._id, type: 'REFERRAL' })
+    const entries = await ReferralLedger.find({ userId: req.user.id })
       .sort({ createdAt: -1 })
-      .select('amount note createdAt extRef metadata')
+      .select('amountPaise note createdAt status level sourceUserId topupExtRef')
       .lean();
 
-    const totalEarnedPaise = entries.reduce((sum, entry) => sum + (entry.amount || 0), 0);
+    const totals = entries.reduce(
+      (acc, entry) => {
+        const amount = entry.amountPaise || 0;
+        if (entry.status === 'paid') {
+          acc.paid += amount;
+        } else if (entry.status === 'cancelled') {
+          acc.cancelled += amount;
+        } else {
+          acc.pending += amount;
+        }
+        return acc;
+      },
+      { pending: 0, paid: 0, cancelled: 0 },
+    );
 
     return res.json({
-      totalEarnedPaise,
+      totalEarnedPaise: totals.pending + totals.paid,
+      totalPendingPaise: totals.pending,
+      totalPaidPaise: totals.paid,
+      totalCancelledPaise: totals.cancelled,
       entries: entries.map((entry) => ({
-        amount: entry.amount,
+        id: entry._id,
+        amountPaise: entry.amountPaise,
+        amount: entry.amountPaise,
         note: entry.note,
+        status: entry.status,
+        level: entry.level,
+        sourceUserId: entry.sourceUserId ? entry.sourceUserId.toString() : null,
         createdAt: entry.createdAt,
-        extRef: entry.extRef,
-        metadata: entry.metadata || null,
+        topupExtRef: entry.topupExtRef || null,
       })),
     });
   } catch (err) {
@@ -436,6 +539,49 @@ router.get('/referrals/config', auth, (req, res) => {
     });
   } catch (err) {
     console.error('referral config error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.patch('/admin/referrals/:entryId/status', auth, admin, async (req, res) => {
+  try {
+    const { entryId } = req.params;
+    const { status } = req.body || {};
+
+    const allowed = new Set(['pending', 'paid', 'cancelled']);
+    if (!allowed.has(status)) {
+      return res.status(400).json({ error: 'invalid status' });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(entryId)) {
+      return res.status(400).json({ error: 'invalid entry id' });
+    }
+
+    const entry = await ReferralLedger.findByIdAndUpdate(
+      entryId,
+      { status },
+      { new: true },
+    ).lean();
+
+    if (!entry) {
+      return res.status(404).json({ error: 'not found' });
+    }
+
+    return res.json({
+      entry: {
+        id: entry._id,
+        amountPaise: entry.amountPaise,
+        note: entry.note,
+        status: entry.status,
+        level: entry.level,
+        sourceUserId: entry.sourceUserId ? entry.sourceUserId.toString() : null,
+        topupExtRef: entry.topupExtRef || null,
+        updatedAt: entry.updatedAt,
+        createdAt: entry.createdAt,
+      },
+    });
+  } catch (err) {
+    console.error('admin referral status error', err);
     return res.status(500).json({ error: 'server error' });
   }
 });

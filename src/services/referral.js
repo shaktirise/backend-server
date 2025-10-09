@@ -1,8 +1,6 @@
 import crypto from 'crypto';
 import User from '../models/User.js';
-import Wallet from '../models/Wallet.js';
-import WalletLedger from '../models/WalletLedger.js';
-import { ensureWallet } from './wallet.js';
+import ReferralLedger from '../models/ReferralLedger.js';
 
 const REFERRAL_CODE_ALPHABET = process.env.REFERRAL_CODE_ALPHABET || 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -166,7 +164,7 @@ export async function handleReferralTopupPayout({
   const ancestors = await loadAncestorChain(user.referredBy, depth, session);
   if (!ancestors.length) return { payouts: [], activated };
 
-  const baseRef = sourceLedger.extRef || sourceLedger._id.toString();
+  const baseRef = sourceLedger?.extRef || (sourceLedger?._id ? String(sourceLedger._id) : `${user._id}:${Date.now()}`);
   const payouts = [];
 
   for (let level = 0; level < ancestors.length; level += 1) {
@@ -177,37 +175,24 @@ export async function handleReferralTopupPayout({
     if (creditAmount <= 0) continue;
 
     const ancestor = ancestors[level];
-    const wallet = await ensureWallet(ancestor._id, session);
-    const extRef = `ref:${baseRef}:L${level + 1}`;
+    const ledgerDoc = {
+      userId: ancestor._id,
+      sourceUserId: user._id,
+      level: level + 1,
+      amountPaise: creditAmount,
+      note: `Referral level ${level + 1} earnings from ${user._id}`,
+      status: 'pending',
+      topupLedgerId: sourceLedger?._id || null,
+      topupExtRef: baseRef || null,
+    };
 
     try {
-      await Wallet.updateOne(
-        { _id: wallet._id },
-        { $inc: { balance: creditAmount } },
-        { session },
-      );
-
-      await WalletLedger.create(
-        [{
-          walletId: wallet._id,
-          type: 'REFERRAL',
-          amount: creditAmount,
-          note: `Referral level ${level + 1} earnings from ${user._id}`,
-          extRef,
-          metadata: {
-            sourceUserId: user._id,
-            level: level + 1,
-            topupLedgerId: sourceLedger._id,
-            topupExtRef: sourceLedger.extRef || null,
-          },
-        }],
-        { session },
-      );
-
+      await ReferralLedger.create([ledgerDoc], { session });
       payouts.push({
         level: level + 1,
         userId: ancestor._id,
-        amount: creditAmount,
+        amountPaise: creditAmount,
+        status: 'pending',
       });
     } catch (err) {
       if (err?.code === 11000) {
@@ -219,4 +204,3 @@ export async function handleReferralTopupPayout({
 
   return { payouts, activated };
 }
-
