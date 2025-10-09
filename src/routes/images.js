@@ -3,8 +3,22 @@ import crypto from 'crypto';
 import { auth, admin } from '../middleware/auth.js';
 import Image from '../models/Image.js';
 import { uploadImage } from '../services/cloudinary.js';
+import multer from 'multer';
 
 const router = express.Router();
+
+const MAX_UPLOAD_BYTES = (() => {
+  const raw = Number.parseInt(process.env.IMAGE_UPLOAD_MAX_BYTES || '', 10);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return 5 * 1024 * 1024; // 5MB default
+})();
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: MAX_UPLOAD_BYTES,
+  },
+});
 
 function parseCloudinaryUrl(url) {
   try {
@@ -69,36 +83,56 @@ router.post('/signature', auth, admin, (req, res) => {
   }
 });
 
-router.post('/upload', auth, admin, async (req, res) => {
+router.post('/upload', auth, admin, upload.any(), async (req, res) => {
   try {
+    const normalizedInputs = [];
+
+    if (Array.isArray(req.files) && req.files.length) {
+      for (const file of req.files) {
+        if (!file?.buffer?.length) continue;
+        const mime = file.mimetype || 'application/octet-stream';
+        const base64 = file.buffer.toString('base64');
+        normalizedInputs.push({ file: `data:${mime};base64,${base64}` });
+      }
+    }
+
     const rawInput = Array.isArray(req.body?.files)
       ? req.body.files
       : req.body?.file !== undefined
         ? [req.body.file]
         : [];
 
-    if (!rawInput.length) {
-      return res.status(400).json({ error: 'files required', hint: 'Send base64 string or array in "files".' });
+    for (const input of rawInput) {
+      if (input === undefined || input === null) continue;
+      if (typeof input === 'string') {
+        normalizedInputs.push({ file: input });
+      } else if (typeof input === 'object' && !Array.isArray(input)) {
+        normalizedInputs.push(input);
+      } else {
+        return res.status(400).json({ error: 'invalid file payload' });
+      }
     }
-    if (rawInput.length > 3) {
+
+    if (!normalizedInputs.length) {
+      return res.status(400).json({
+        error: 'files required',
+        hint: 'Send multipart/form-data with field "files" or JSON body with base64 strings.',
+      });
+    }
+    if (normalizedInputs.length > 3) {
       return res.status(400).json({ error: 'too_many_files', max: 3 });
     }
 
     const uploads = [];
-    for (const input of rawInput) {
-      const item = (input && typeof input === 'object' && !Array.isArray(input))
-        ? input
-        : { file: input };
-
+    for (const itemRaw of normalizedInputs) {
+      const item = itemRaw && typeof itemRaw === 'object' ? itemRaw : { file: itemRaw };
       const fileContent = typeof item.file === 'string'
         ? item.file
         : typeof item.data === 'string'
           ? item.data
           : typeof item.image === 'string'
             ? item.image
-            : typeof input === 'string'
-              ? input
-              : null;
+            : null;
       if (!fileContent || !fileContent.trim()) {
         return res.status(400).json({ error: 'file content required' });
       }
