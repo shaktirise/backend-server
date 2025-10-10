@@ -793,15 +793,9 @@ router.post('/daily-tip', async (req, res) => {
       typeof req.body?.message === 'string' ? req.body.message.trim() : '';
     if (!message) return res.status(400).json({ error: 'message_required' });
 
-    let publishedAt = parseDate(req.body?.publishedAt);
-    if (!publishedAt) {
-      publishedAt = new Date();
-    }
-
     const createdBy = toObjectId(req.user?.id);
     const tip = await DailyTip.create({
       message,
-      publishedAt,
       createdBy: createdBy || undefined,
     });
 
