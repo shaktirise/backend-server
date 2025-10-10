@@ -16,6 +16,7 @@ import walletRoutes from './routes/wallet.v2.js';
 import segmentRoutes from './routes/segments.js';
 import imageRoutes from './routes/images.js';
 import adminDashboardRoutes from './routes/admin.dashboard.js';
+import dailyTipRoutes from './routes/dailyTip.js';
 import Wallet from './models/Wallet.js';
 import WalletLedger from './models/WalletLedger.js';
 
@@ -149,6 +150,7 @@ app.use('/api/advice', adviceRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/segments', segmentRoutes);
 app.use('/api/images', imageRoutes);
+app.use('/api/daily-tip', dailyTipRoutes);
 
 app.use((err, req, res, next) => {
   if (err?.message === 'Not allowed by CORS') {

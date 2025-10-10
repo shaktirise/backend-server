@@ -8,6 +8,7 @@ import WalletLedger from '../models/WalletLedger.js';
 import ReferralLedger from '../models/ReferralLedger.js';
 import ReferralWithdrawalRequest from '../models/ReferralWithdrawalRequest.js';
 import Purchase from '../models/Purchase.js';
+import DailyTip from '../models/DailyTip.js';
 
 const router = express.Router();
 
@@ -782,6 +783,73 @@ router.get('/users/:userId/referrals', async (req, res) => {
     return res.json({ page, limit, total, items });
   } catch (err) {
     console.error('admin user referrals error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.post('/daily-tip', async (req, res) => {
+  try {
+    const message =
+      typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+    if (!message) return res.status(400).json({ error: 'message_required' });
+
+    let publishedAt = parseDate(req.body?.publishedAt);
+    if (!publishedAt) {
+      publishedAt = new Date();
+    }
+
+    const createdBy = toObjectId(req.user?.id);
+    const tip = await DailyTip.create({
+      message,
+      publishedAt,
+      createdBy: createdBy || undefined,
+    });
+
+    const payload = {
+      id: tip._id,
+      message: tip.message,
+      publishedAt: tip.publishedAt,
+      createdAt: tip.createdAt,
+      createdBy: createdBy ? { id: createdBy.toString() } : null,
+    };
+
+    const io = req.app?.get('io');
+    if (io && typeof io.emit === 'function') {
+      io.emit('daily-tip:new', payload);
+    }
+
+    return res.status(201).json({ ok: true, tip: payload });
+  } catch (err) {
+    console.error('admin daily tip create error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.get('/daily-tip', async (req, res) => {
+  try {
+    const { limit, skip, page } = parsePagination(req.query);
+
+    const [itemsRaw, total] = await Promise.all([
+      DailyTip.find({})
+        .sort({ publishedAt: -1, createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('createdBy', 'name email phone role createdAt lastLoginAt')
+        .lean(),
+      DailyTip.countDocuments({}),
+    ]);
+
+    const items = itemsRaw.map((doc) => ({
+      id: doc._id,
+      message: doc.message,
+      publishedAt: doc.publishedAt,
+      createdAt: doc.createdAt,
+      createdBy: doc.createdBy ? buildUserPublicProfile(doc.createdBy) : null,
+    }));
+
+    return res.json({ page, limit, total, items });
+  } catch (err) {
+    console.error('admin daily tip list error', err);
     return res.status(500).json({ error: 'server error' });
   }
 });
