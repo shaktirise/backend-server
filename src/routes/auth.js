@@ -19,11 +19,22 @@ const router = express.Router();
 
 const requestLimiter = rateLimit({ windowMs: 60 * 1000, max: 15 });
 
-const ACCESS_TOKEN_TTL_SEC = parseInt(process.env.ACCESS_TOKEN_TTL_SEC || '3600', 10);
-const REFRESH_TOKEN_TTL_SEC = parseInt(
-  process.env.REFRESH_TOKEN_TTL_SEC || String(3 * 24 * 60 * 60),
+const ACCESS_TOKEN_TTL_SEC_RAW = Number.parseInt(
+  process.env.ACCESS_TOKEN_TTL_SEC ?? '0',
   10,
 );
+const ACCESS_TOKEN_TTL_SEC = Number.isFinite(ACCESS_TOKEN_TTL_SEC_RAW)
+  && ACCESS_TOKEN_TTL_SEC_RAW > 0
+  ? ACCESS_TOKEN_TTL_SEC_RAW
+  : null;
+const REFRESH_TOKEN_TTL_SEC_RAW = Number.parseInt(
+  process.env.REFRESH_TOKEN_TTL_SEC ?? '0',
+  10,
+);
+const REFRESH_TOKEN_TTL_SEC = Number.isFinite(REFRESH_TOKEN_TTL_SEC_RAW)
+  && REFRESH_TOKEN_TTL_SEC_RAW > 0
+  ? REFRESH_TOKEN_TTL_SEC_RAW
+  : null;
 const REFRESH_TOKEN_BCRYPT_ROUNDS = parseInt(
   process.env.REFRESH_TOKEN_BCRYPT_ROUNDS || '12',
   10,
@@ -42,21 +53,29 @@ function isValidPassword(password) {
 }
 
 function signAccessToken(user) {
-  const expiresAt = new Date(Date.now() + ACCESS_TOKEN_TTL_SEC * 1000);
   const payload = {
     id: user._id.toString(),
     sub: user._id.toString(),
     role: user.role,
   };
-  const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: ACCESS_TOKEN_TTL_SEC });
+  const token = jwt.sign(
+    payload,
+    process.env.JWT_SECRET,
+    ACCESS_TOKEN_TTL_SEC ? { expiresIn: ACCESS_TOKEN_TTL_SEC } : undefined,
+  );
+  const expiresAt = ACCESS_TOKEN_TTL_SEC
+    ? new Date(Date.now() + ACCESS_TOKEN_TTL_SEC * 1000)
+    : null;
   return { token, expiresAt };
 }
 
 async function attachRefreshToken(user) {
   const raw = crypto.randomBytes(48).toString('hex');
-  const expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_SEC * 1000);
+  const expiresAt = REFRESH_TOKEN_TTL_SEC
+    ? new Date(Date.now() + REFRESH_TOKEN_TTL_SEC * 1000)
+    : null;
   user.refreshTokenHash = await bcrypt.hash(raw, REFRESH_TOKEN_BCRYPT_ROUNDS);
-  user.refreshTokenExpiresAt = expiresAt;
+  user.refreshTokenExpiresAt = expiresAt || undefined;
   return { refreshToken: `${user._id.toString()}.${raw}`, expiresAt };
 }
 
@@ -302,11 +321,13 @@ router.post('/refresh-token', async (req, res) => {
     }
 
     const user = await User.findById(userId);
+    if (!user || !user.refreshTokenHash) {
+      return res.status(401).json({ error: 'invalid refresh token' });
+    }
+
     if (
-      !user
-      || !user.refreshTokenHash
-      || !user.refreshTokenExpiresAt
-      || user.refreshTokenExpiresAt.getTime() < Date.now()
+      user.refreshTokenExpiresAt
+      && user.refreshTokenExpiresAt.getTime() < Date.now()
     ) {
       return res.status(401).json({ error: 'invalid refresh token' });
     }
