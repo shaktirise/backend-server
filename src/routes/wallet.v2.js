@@ -35,8 +35,8 @@ function buildShortReceipt(userId) {
 }
 
 const MIN_TOPUP_RUPEES = (() => {
-  const raw = Number.parseInt(process.env.MIN_TOPUP_RUPEES || '1', 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : 1000;
+  const raw = Number.parseInt(process.env.MIN_TOPUP_RUPEES || '2100', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 2100;
 })();
 const MIN_TOPUP_PAISE = MIN_TOPUP_RUPEES * 100;
 

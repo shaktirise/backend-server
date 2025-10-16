@@ -10,7 +10,11 @@ const REFERRAL_CODE_LENGTH = (() => {
   return 8;
 })();
 
-const DEFAULT_LEVEL_PERCENTAGES = [10, 5, 2];
+// Default commission percentages by level (as whole-number percents)
+// Example: [10, 7, 5, 4, 2, 2, 2] =>
+//   10% for level 1, 7% for level 2, 5% for level 3,
+//   4% for level 4, and 2% for levels 5 to 7
+const DEFAULT_LEVEL_PERCENTAGES = [10, 7, 5, 4, 2, 2, 2];
 
 function generateReferralCode() {
   const bytes = crypto.randomBytes(REFERRAL_CODE_LENGTH);
