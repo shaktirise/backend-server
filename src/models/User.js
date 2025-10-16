@@ -7,7 +7,7 @@ const UserSchema = new mongoose.Schema(
     passwordHash: { type: String },
 
     role: { type: String, enum: ['user', 'admin'], default: 'user', index: true },
-    walletBalance: { type: Number, default: 1000 },
+    walletBalance: { type: Number, default: 0 },
 
     otpHash: { type: String },
     otpExpiresAt: { type: Date },
