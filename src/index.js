@@ -32,10 +32,61 @@ function parseOrigins(value) {
   return list;
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+}
+
+function compileOriginMatcher(pattern) {
+  if (pattern.includes('*')) {
+    const source = `^${pattern
+      .split('*')
+      .map((segment) => escapeRegExp(segment))
+      .join('.*')}$`;
+    const regex = new RegExp(source);
+    return (origin) => regex.test(origin);
+  }
+
+  try {
+    const parsed = new URL(pattern);
+    const allowAnyPort =
+      !parsed.port && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1');
+
+    return (origin) => {
+      try {
+        const candidate = new URL(origin);
+        if (allowAnyPort) {
+          return (
+            candidate.protocol === parsed.protocol && candidate.hostname === parsed.hostname
+          );
+        }
+        return candidate.origin === parsed.origin;
+      } catch (err) {
+        return origin === pattern;
+      }
+    };
+  } catch (err) {
+    return (origin) => origin === pattern;
+  }
+}
+
+function createOriginMatcher(list) {
+  const allowAll = list.length === 0 || list[0] === '*';
+  const matchers = allowAll ? [] : list.map((pattern) => compileOriginMatcher(pattern));
+
+  return {
+    allowAll,
+    matches(origin) {
+      if (!origin) return true;
+      if (allowAll) return true;
+      return matchers.some((matcher) => matcher(origin));
+    },
+  };
+}
+
 const httpOrigins = parseOrigins(process.env.CORS_ALLOWED_ORIGINS);
 const socketOrigins = parseOrigins(process.env.SOCKET_ALLOWED_ORIGINS);
-const corsAllowAll = httpOrigins.length === 0 || httpOrigins[0] === '*';
-const effectiveSocketOrigins = (socketOrigins.length ? socketOrigins : httpOrigins);
+const httpOriginMatcher = createOriginMatcher(httpOrigins);
+const socketOriginMatcher = createOriginMatcher(socketOrigins.length ? socketOrigins : httpOrigins);
 
 const app = express();
 const server = http.createServer(app);
@@ -43,7 +94,7 @@ const io = new Server(server, {
   cors: {
     origin(origin, callback) {
       if (!origin) return callback(null, true);
-      if (!effectiveSocketOrigins.length || effectiveSocketOrigins.includes(origin)) {
+      if (socketOriginMatcher.matches(origin)) {
         return callback(null, true);
       }
       console.warn(`Blocked Socket.IO origin: ${origin}`);
@@ -59,8 +110,7 @@ app.set('trust proxy', 1);
 const corsOptions = {
   origin(origin, callback) {
     if (!origin) return callback(null, true);
-    if (corsAllowAll) return callback(null, true);
-    if (httpOrigins.includes(origin)) return callback(null, true);
+    if (httpOriginMatcher.matches(origin)) return callback(null, true);
     console.warn(`Blocked CORS origin: ${origin}`);
     return callback(new Error('Not allowed by CORS'));
   },
