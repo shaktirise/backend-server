@@ -1,6 +1,9 @@
 import crypto from 'crypto';
 import User from '../models/User.js';
 import ReferralLedger from '../models/ReferralLedger.js';
+import ActivationEvent from '../models/ActivationEvent.js';
+import ReferralClosure from '../models/ReferralClosure.js';
+import BonusPayout from '../models/BonusPayout.js';
 
 const REFERRAL_CODE_ALPHABET = process.env.REFERRAL_CODE_ALPHABET || 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -117,6 +120,39 @@ async function loadAncestorChain(startUserId, depth, session) {
   return ancestors;
 }
 
+async function upsertReferralClosureLinks(descendantId, ancestors, session) {
+  if (!descendantId || !Array.isArray(ancestors) || ancestors.length === 0) {
+    return;
+  }
+
+  const now = new Date();
+  const ops = ancestors.map((ancestor, idx) => ({
+    updateOne: {
+      filter: {
+        ancestorId: ancestor._id,
+        descendantId,
+      },
+      update: {
+        $set: {
+          depth: idx + 1,
+          updatedAt: now,
+        },
+        $setOnInsert: {
+          createdAt: now,
+        },
+      },
+      upsert: true,
+    },
+  }));
+
+  if (ops.length) {
+    await ReferralClosure.bulkWrite(ops, {
+      session,
+      ordered: false,
+    });
+  }
+}
+
 export async function handleReferralTopupPayout({
   userId,
   topupAmountPaise,
@@ -163,13 +199,70 @@ export async function handleReferralTopupPayout({
     );
   }
 
-  if (!user.referredBy) return { payouts: [], activated };
+  if (!user.referredBy) {
+    return { payouts: [], activated };
+  }
 
   const ancestors = await loadAncestorChain(user.referredBy, depth, session);
   if (!ancestors.length) return { payouts: [], activated };
+  await upsertReferralClosureLinks(user._id, ancestors, session);
+
+  let activationEvent = null;
+  try {
+    if (sourceLedger?._id) {
+      activationEvent = await ActivationEvent.findOneAndUpdate(
+        { sourceLedgerId: sourceLedger._id },
+        {
+          $setOnInsert: {
+            userId,
+            sourceUserId: user.referredBy || null,
+            amountPaise: topupAmountPaise,
+            occurredAt: sourceLedger?.createdAt || new Date(),
+            type: 'TOPUP',
+          },
+          $set: {
+            status: 'SUCCEEDED',
+            metadata: {
+              ...(sourceLedger?.metadata || {}),
+              ledgerId: sourceLedger._id,
+              extRef: sourceLedger?.extRef || null,
+            },
+          },
+        },
+        {
+          upsert: true,
+          new: true,
+          setDefaultsOnInsert: true,
+          session,
+        },
+      );
+    } else {
+      const [createdEvent] = await ActivationEvent.create(
+        [
+          {
+            userId,
+            sourceUserId: user.referredBy || null,
+            amountPaise: topupAmountPaise,
+            status: 'SUCCEEDED',
+            type: 'TOPUP',
+            occurredAt: new Date(),
+            metadata: {
+              ledgerId: sourceLedger?._id || null,
+              extRef: sourceLedger?.extRef || null,
+            },
+          },
+        ],
+        { session },
+      );
+      activationEvent = createdEvent;
+    }
+  } catch (eventErr) {
+    console.warn('activation event sync failed', eventErr);
+  }
 
   const baseRef = sourceLedger?.extRef || (sourceLedger?._id ? String(sourceLedger._id) : `${user._id}:${Date.now()}`);
   const payouts = [];
+  const bonusDocs = [];
 
   for (let level = 0; level < ancestors.length; level += 1) {
     const percentage = config.levelPercentages[level] || 0;
@@ -191,12 +284,28 @@ export async function handleReferralTopupPayout({
     };
 
     try {
-      await ReferralLedger.create([ledgerDoc], { session });
+      const [referralDoc] = await ReferralLedger.create([ledgerDoc], { session });
       payouts.push({
         level: level + 1,
         userId: ancestor._id,
+        uplineUserId: ancestor._id,
+        downlineUserId: user._id,
         amountPaise: creditAmount,
         status: 'pending',
+      });
+      bonusDocs.push({
+        uplineUserId: ancestor._id,
+        downlineUserId: user._id,
+        activationEventId: activationEvent?._id || null,
+        level: level + 1,
+        amountPaise: creditAmount,
+        status: 'PENDING',
+        note: ledgerDoc.note,
+        metadata: {
+          referralLedgerId: referralDoc?._id || null,
+          topupLedgerId: sourceLedger?._id || null,
+          topupExtRef: baseRef || null,
+        },
       });
     } catch (err) {
       if (err?.code === 11000) {
@@ -206,5 +315,50 @@ export async function handleReferralTopupPayout({
     }
   }
 
-  return { payouts, activated };
+  if (bonusDocs.length) {
+    const now = new Date();
+    try {
+      await BonusPayout.bulkWrite(
+        bonusDocs.map((doc) => ({
+          updateOne: {
+            filter: {
+              activationEventId: doc.activationEventId || null,
+              uplineUserId: doc.uplineUserId,
+              downlineUserId: doc.downlineUserId,
+              level: doc.level,
+            },
+            update: {
+              $setOnInsert: {
+                createdAt: now,
+                uplineUserId: doc.uplineUserId,
+                downlineUserId: doc.downlineUserId,
+                activationEventId: doc.activationEventId || null,
+                level: doc.level,
+                amountPaise: doc.amountPaise,
+                status: doc.status,
+                note: doc.note,
+                metadata: {
+                  ...(doc.metadata || {}),
+                },
+                processedAt: null,
+                processedBy: null,
+              },
+              $set: {
+                updatedAt: now,
+                metadata: {
+                  ...(doc.metadata || {}),
+                },
+              },
+            },
+            upsert: true,
+          },
+        })),
+        { session, ordered: false },
+      );
+    } catch (bonusErr) {
+      console.warn('bonus payout sync failed', bonusErr);
+    }
+  }
+
+  return { payouts, activated, activationEventId: activationEvent?._id || null };
 }

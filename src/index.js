@@ -19,6 +19,7 @@ import adminDashboardRoutes from './routes/admin.dashboard.js';
 import dailyTipRoutes from './routes/dailyTip.js';
 import Wallet from './models/Wallet.js';
 import WalletLedger from './models/WalletLedger.js';
+import { WALLET_LEDGER_TYPES } from './constants/walletLedger.js';
 
 dotenv.config();
 
@@ -155,7 +156,7 @@ app.post('/api/webhooks/razorpay', bodyParser.raw({ type: '*/*' }), async (req, 
                 {
                   walletId: wallet._id,
                   userId: wallet.userId || userId,
-                  type: 'TOPUP',
+                  type: WALLET_LEDGER_TYPES.DEPOSIT,
                   amount,
                   note: 'Razorpay top-up (webhook)',
                   extRef: paymentId,

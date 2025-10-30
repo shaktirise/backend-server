@@ -5,6 +5,7 @@ import mongoose from 'mongoose';
 import { auth } from '../middleware/auth.js';
 import Wallet from '../models/Wallet.js';
 import WalletLedger from '../models/WalletLedger.js';
+import { WALLET_LEDGER_TYPES } from '../constants/walletLedger.js';
 import { ensureWallet } from '../services/wallet.js';
 import { handleReferralTopupPayout } from '../services/referral.js';
 import Purchase from '../models/Purchase.js';
@@ -171,7 +172,7 @@ router.post('/topups/verify', async (req, res) => {
             {
               walletId: wallet._id,
               userId: wallet.userId || userId,
-              type: 'TOPUP',
+              type: WALLET_LEDGER_TYPES.DEPOSIT,
               amount: creditAmount,
               note: 'Razorpay top-up',
               extRef: razorpay_payment_id,

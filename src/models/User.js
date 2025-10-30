@@ -23,6 +23,17 @@ const UserSchema = new mongoose.Schema(
     pinHash: { type: String },
     pinSetAt: { type: Date },
 
+    kycStatus: {
+      type: String,
+      enum: ['PENDING', 'SUBMITTED', 'VERIFIED', 'REJECTED'],
+      default: 'PENDING',
+      index: true,
+    },
+    kycSubmittedAt: { type: Date },
+    kycVerifiedAt: { type: Date },
+    kycRejectedAt: { type: Date },
+    kycRejectionReason: { type: String },
+
     lastLoginAt: { type: Date },
     loginCount: { type: Number, default: 0 },
     lastLoginIp: { type: String },
