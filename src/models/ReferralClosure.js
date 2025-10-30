@@ -6,7 +6,7 @@ const ReferralClosureSchema = new Schema(
   {
     ancestorId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     descendantId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    depth: { type: Number, required: true, min: 0, index: true },
+    depth: { type: Number, required: true, min: 0 },
   },
   { timestamps: true }
 );

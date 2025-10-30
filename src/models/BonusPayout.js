@@ -7,8 +7,8 @@ const BonusPayoutSchema = new Schema(
     uplineUserId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     downlineUserId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     activationEventId: { type: Schema.Types.ObjectId, ref: 'ActivationEvent', index: true },
-    walletLedgerId: { type: Schema.Types.ObjectId, ref: 'WalletLedger', index: true },
-    reversalLedgerId: { type: Schema.Types.ObjectId, ref: 'WalletLedger', index: true },
+    walletLedgerId: { type: Schema.Types.ObjectId, ref: 'WalletLedger' },
+    reversalLedgerId: { type: Schema.Types.ObjectId, ref: 'WalletLedger' },
     level: { type: Number, required: true, min: 1, max: 50 },
     amountPaise: { type: Number, required: true },
     status: {

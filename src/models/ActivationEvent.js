@@ -6,7 +6,7 @@ const ActivationEventSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     sourceUserId: { type: Schema.Types.ObjectId, ref: 'User', index: true },
-    sourceLedgerId: { type: Schema.Types.ObjectId, ref: 'WalletLedger', index: true },
+    sourceLedgerId: { type: Schema.Types.ObjectId, ref: 'WalletLedger' },
     type: {
       type: String,
       enum: ['TOPUP', 'REFERRAL', 'MANUAL'],
