@@ -2,6 +2,7 @@ import express from 'express';
 import { auth, admin } from '../middleware/auth.js';
 import TradeMessage, { TRADE_MESSAGE_CATEGORIES, normalizeTradeMessageCategory } from '../models/TradeMessage.js';
 import TradeMessageHistory from '../models/TradeMessageHistory.js';
+import { sendTextSms } from '../services/sms.js';
 
 const router = express.Router();
 
@@ -138,5 +139,52 @@ router.post('/:category', auth, admin, async (req, res) => {
   }
 });
 
-export default router;
+// Send SMS for a specific trade message category (admin only)
+// POST /api/trade-messages/:category/send-sms
+// Body: { to: "+91...", text?: string, buy?: string, target?: string, stoploss?: string }
+router.post('/:category/send-sms', auth, admin, async (req, res) => {
+  try {
+    const category = normalizeTradeMessageCategory(req.params.category);
+    if (!category) return res.status(404).json({ error: 'category not found' });
 
+    const to = req.body?.to || req.body?.phone;
+    if (!to) return res.status(400).json({ error: 'to required' });
+
+    const explicitText = (req.body?.text || '').toString().trim();
+    let body = explicitText;
+
+    if (!body) {
+      const doc = await TradeMessage.findOne({ category }).lean();
+      if (doc?.text && String(doc.text).trim()) {
+        body = String(doc.text).trim();
+      } else {
+        const buy = (req.body?.buy || doc?.buy || '').toString().trim();
+        const target = (req.body?.target || doc?.target || '').toString().trim();
+        const stoploss = (req.body?.stoploss || doc?.stoploss || '').toString().trim();
+        const parts = [];
+        if (buy) parts.push(`BUY: ${buy}`);
+        if (target) parts.push(`TARGET: ${target}`);
+        if (stoploss) parts.push(`STOPLOSS: ${stoploss}`);
+        body = parts.join('\n');
+      }
+    }
+
+    if (!body) return res.status(400).json({ error: 'message empty' });
+
+    const headerDry = String(req.headers['x-dry-run'] || '').toLowerCase();
+    const queryDry = String(req.query.dryRun || req.query.dry || '').toLowerCase();
+    const bodyDry = req.body?.dryRun === true || req.body?.dry === true;
+    const dryRun = bodyDry || headerDry === 'true' || headerDry === '1' || queryDry === 'true' || queryDry === '1';
+
+    const result = await sendTextSms(to, body, { dryRun });
+    if (!result.ok) {
+      return res.status(502).json({ ok: false, error: result.error || 'send_failed' });
+    }
+    return res.json({ ok: true, simulated: !!result.simulated, sid: result.sid || null, category, to, preview: result.simulated ? { to, body } : undefined });
+  } catch (err) {
+    console.error('trade-messages send-sms error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+export default router;
