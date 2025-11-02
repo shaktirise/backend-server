@@ -23,7 +23,7 @@ export function normalizeTradeMessageCategory(value) {
 
   const normalized = alias.get(key) || key;
   return TRADE_MESSAGE_CATEGORIES.includes(normalized) ? normalized : null;
-  
+}
 
 const TradeMessageSchema = new mongoose.Schema(
   {
@@ -38,4 +38,3 @@ const TradeMessageSchema = new mongoose.Schema(
 );
 
 export default mongoose.model('TradeMessage', TradeMessageSchema);
-
