@@ -205,6 +205,12 @@ app.use('/api/segments', segmentRoutes);
 app.use('/api/images', imageRoutes);
 app.use('/api/daily-tip', dailyTipRoutes);
 
+// Return JSON for unknown API routes instead of Express HTML
+app.use('/api', (req, res, next) => {
+  if (res.headersSent) return next();
+  return res.status(404).json({ error: 'not_found', path: req.path, method: req.method });
+});
+
 app.use((err, req, res, next) => {
   if (err?.message === 'Not allowed by CORS') {
     return res.status(403).json({ error: 'CORS origin denied' });
