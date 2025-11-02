@@ -7,9 +7,10 @@ import { isCloudinaryConfigured, uploadImage } from '../services/cloudinary.js';
 const router = express.Router();
 
 const SEGMENT_METADATA = {
-   STOCKS: { label: 'Stocks' },
-  FUTURE: { label: 'Future' },
-  OPTIONS: { label: 'Options' },
+  NIFTY: { label: 'Nifty' },
+  BANKNIFTY: { label: 'BankNifty' },
+  STOCKS: { label: 'Stocks' },
+  SENSEX: { label: 'Sensex' },
   COMMODITY: { label: 'Commodity' },
 };
 

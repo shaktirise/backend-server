@@ -1,7 +1,6 @@
 import mongoose from 'mongoose';
 
-// Updated to 4 keys: STOCKS, FUTURE, OPTIONS, COMMODITY
-export const SEGMENT_KEYS = Object.freeze(['STOCKS', 'FUTURE', 'OPTIONS', 'COMMODITY']);
+export const SEGMENT_KEYS = Object.freeze(['NIFTY', 'BANKNIFTY', 'STOCKS', 'SENSEX', 'COMMODITY']);
 
 export function normalizeSegmentKey(value) {
   if (value === undefined || value === null) return null;
@@ -10,20 +9,15 @@ export function normalizeSegmentKey(value) {
     .toUpperCase()
     .replace(/[\s_-]+/g, '');
   const aliasMap = new Map([
+    ['BANKNIFTY', 'BANKNIFTY'],
+    ['BANKNIFTY50', 'BANKNIFTY'],
+    ['BANKNIFTYINDEX', 'BANKNIFTY'],
     ['STOCK', 'STOCKS'],
     ['STOCKS', 'STOCKS'],
-    ['FUTURE', 'FUTURE'],
-    ['FUTURES', 'FUTURE'],
-    ['OPTION', 'OPTIONS'],
-    ['OPTIONS', 'OPTIONS'],
+    ['SENSEX', 'SENSEX'],
+    ['NIFTY', 'NIFTY'],
     ['COMMODITY', 'COMMODITY'],
     ['COMODITY', 'COMMODITY'],
-    // legacy keys map to new segments where sensible
-    ['NIFTY', 'FUTURE'],
-    ['BANKNIFTY', 'FUTURE'],
-    ['BANKNIFTY50', 'FUTURE'],
-    ['BANKNIFTYINDEX', 'FUTURE'],
-    ['SENSEX', 'STOCKS'],
   ]);
   const normalized = aliasMap.get(key) || key;
   return SEGMENT_KEYS.find((segment) => segment === normalized) || null;

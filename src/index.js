@@ -213,7 +213,7 @@ app.use((err, req, res, next) => {
 
 
 io.on('connection', (socket) => {
-  const categories = ['STOCKS', 'FUTURE', 'OPTIONS', 'COMMODITY'];
+  const categories = ['NIFTY', 'BANK_NIFTY', 'SENSEX', 'STOCK', 'COMMODITY'];
   const timer = setInterval(() => {
     const category = categories[Math.floor(Math.random() * categories.length)];
     const value = Math.round((Math.random() * 1000 + 100) * 100) / 100;
