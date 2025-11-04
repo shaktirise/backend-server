@@ -1,0 +1,284 @@
+{
+  "info": {
+    "name": "Shaktirise Backend — Referral 10x10 (Local)",
+    "_postman_id": "a4a9e7a8-5d7b-4ba6-9a3f-0e2e8b3e10a1",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4000" },
+    { "key": "defaultPassword", "value": "P@ssw0rd1" },
+    { "key": "adminEmail", "value": "admin@test.com" },
+    { "key": "aEmail", "value": "a@test.com" },
+    { "key": "bEmail", "value": "b@test.com" },
+    { "key": "cEmail", "value": "c@test.com" },
+    { "key": "adminToken", "value": "" },
+    { "key": "aToken", "value": "" },
+    { "key": "bToken", "value": "" },
+    { "key": "cToken", "value": "" },
+    { "key": "aId", "value": "" },
+    { "key": "bId", "value": "" },
+    { "key": "cId", "value": "" },
+    { "key": "aRefCode", "value": "" },
+    { "key": "bRefCode", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Admin",
+      "item": [
+        {
+          "name": "Admin Signup",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/admin/signup", "host": ["{{baseUrl}}"], "path": ["api","auth","admin","signup"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Admin\",\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{defaultPassword}}\",\n  \"confirmPassword\": \"{{defaultPassword}}\"\n}"
+            }
+          },
+          "event": [
+            { "listen": "test", "script": { "exec": [
+              "const j = pm.response.json();",
+              "if (j && j.token) pm.collectionVariables.set('adminToken', j.token);",
+              "if (j && j.user && j.user.id) pm.collectionVariables.set('adminId', j.user.id);"
+            ], "type": "text/javascript" } }
+          ]
+        },
+        {
+          "name": "Admin Login",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/admin/login", "host": ["{{baseUrl}}"], "path": ["api","auth","admin","login"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{defaultPassword}}\"\n}"
+            }
+          },
+          "event": [
+            { "listen": "test", "script": { "exec": [
+              "const j = pm.response.json();",
+              "if (j && j.token) pm.collectionVariables.set('adminToken', j.token);",
+              "if (j && j.user && j.user.id) pm.collectionVariables.set('adminId', j.user.id);"
+            ], "type": "text/javascript" } }
+          ]
+        },
+        {
+          "name": "MLM Config (admin)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{adminToken}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/mlm/config", "host": ["{{baseUrl}}"], "path": ["api","mlm","config"] }
+          }
+        },
+        {
+          "name": "Simulate Registration for B (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/mlm/simulate", "host": ["{{baseUrl}}"], "path": ["api","mlm","simulate"] },
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"{{bId}}\",\n  \"type\": \"registration\"\n}" }
+          }
+        },
+        {
+          "name": "Simulate Renewal for C (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/mlm/simulate", "host": ["{{baseUrl}}"], "path": ["api","mlm","simulate"] },
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"{{cId}}\",\n  \"type\": \"renewal\"\n}" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "User A",
+      "item": [
+        {
+          "name": "Signup A",
+          "event": [
+            { "listen": "prerequest", "script": { "exec": [
+              "if (!pm.collectionVariables.get('aEmail')) { pm.collectionVariables.set('aEmail', `a+${Date.now()}@test.local`); }"
+            ], "type": "text/javascript" } },
+            { "listen": "test", "script": { "exec": [
+              "const j = pm.response.json();",
+              "if (j && j.token) pm.collectionVariables.set('aToken', j.token);",
+              "if (j && j.user) { pm.collectionVariables.set('aId', j.user.id); pm.collectionVariables.set('aRefCode', j.user.referralCode); }"
+            ], "type": "text/javascript" } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/signup", "host": ["{{baseUrl}}"], "path": ["api","auth","signup"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"User A\",\n  \"email\": \"{{aEmail}}\",\n  \"password\": \"{{defaultPassword}}\",\n  \"confirmPassword\": \"{{defaultPassword}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "A: Me",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{aToken}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/me", "host": ["{{baseUrl}}"], "path": ["api","auth","me"] }
+          }
+        },
+        {
+          "name": "A: Referrals List",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{aToken}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/referrals", "host": ["{{baseUrl}}"], "path": ["api","auth","referrals"] }
+          }
+        },
+        {
+          "name": "A: Earnings",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{aToken}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/referrals/earnings", "host": ["{{baseUrl}}"], "path": ["api","auth","referrals","earnings"] }
+          }
+        },
+        {
+          "name": "A: Wallet Balance",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{aToken}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/wallet/balance", "host": ["{{baseUrl}}"], "path": ["api","wallet","balance"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "User B (referred by A)",
+      "item": [
+        {
+          "name": "Signup B with A's referral",
+          "event": [
+            { "listen": "prerequest", "script": { "exec": [
+              "if (!pm.collectionVariables.get('bEmail')) { pm.collectionVariables.set('bEmail', `b+${Date.now()}@test.local`); }"
+            ], "type": "text/javascript" } },
+            { "listen": "test", "script": { "exec": [
+              "const j = pm.response.json();",
+              "if (j && j.token) pm.collectionVariables.set('bToken', j.token);",
+              "if (j && j.user) { pm.collectionVariables.set('bId', j.user.id); pm.collectionVariables.set('bRefCode', j.user.referralCode); }"
+            ], "type": "text/javascript" } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/signup", "host": ["{{baseUrl}}"], "path": ["api","auth","signup"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"User B\",\n  \"email\": \"{{bEmail}}\",\n  \"password\": \"{{defaultPassword}}\",\n  \"confirmPassword\": \"{{defaultPassword}}\",\n  \"referralCode\": \"{{aRefCode}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "B: Me",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{bToken}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/me", "host": ["{{baseUrl}}"], "path": ["api","auth","me"] }
+          }
+        },
+        {
+          "name": "B: Earnings",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{bToken}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/referrals/earnings", "host": ["{{baseUrl}}"], "path": ["api","auth","referrals","earnings"] }
+          }
+        },
+        {
+          "name": "B: Wallet Balance",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{bToken}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/wallet/balance", "host": ["{{baseUrl}}"], "path": ["api","wallet","balance"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "User C (referred by B)",
+      "item": [
+        {
+          "name": "Signup C with B's referral",
+          "event": [
+            { "listen": "prerequest", "script": { "exec": [
+              "if (!pm.collectionVariables.get('cEmail')) { pm.collectionVariables.set('cEmail', `c+${Date.now()}@test.local`); }"
+            ], "type": "text/javascript" } },
+            { "listen": "test", "script": { "exec": [
+              "const j = pm.response.json();",
+              "if (j && j.token) pm.collectionVariables.set('cToken', j.token);",
+              "if (j && j.user) { pm.collectionVariables.set('cId', j.user.id); }"
+            ], "type": "text/javascript" } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/signup", "host": ["{{baseUrl}}"], "path": ["api","auth","signup"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"User C\",\n  \"email\": \"{{cEmail}}\",\n  \"password\": \"{{defaultPassword}}\",\n  \"confirmPassword\": \"{{defaultPassword}}\",\n  \"referralCode\": \"{{bRefCode}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "C: Me",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{cToken}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/me", "host": ["{{baseUrl}}"], "path": ["api","auth","me"] }
+          }
+        },
+        {
+          "name": "C: Wallet Balance",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{cToken}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/wallet/balance", "host": ["{{baseUrl}}"], "path": ["api","wallet","balance"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reports",
+      "item": [
+        {
+          "name": "A: Referral Tree (depth=10)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{aToken}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/referrals/tree?depth=10", "host": ["{{baseUrl}}"], "path": ["api","auth","referrals","tree"], "query": [{"key":"depth","value":"10"}] }
+          }
+        },
+        {
+          "name": "A: Earnings",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{aToken}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/referrals/earnings", "host": ["{{baseUrl}}"], "path": ["api","auth","referrals","earnings"] }
+          }
+        },
+        {
+          "name": "B: Earnings",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{bToken}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/referrals/earnings", "host": ["{{baseUrl}}"], "path": ["api","auth","referrals","earnings"] }
+          }
+        }
+      ]
+    }
+  ]
+}
+

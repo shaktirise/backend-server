@@ -659,6 +659,10 @@ router.get('/referrals/config', auth, (req, res) => {
       maxDepth: config.maxDepth,
       minActivationPaise: config.minActivationPaise,
       shareBaseUrl: config.shareBaseUrl,
+      registrationAmountsPaise: config.registrationAmountsPaise,
+      renewalAmountsPaise: config.renewalAmountsPaise,
+      registrationFeePaise: config.registrationFeePaise,
+      renewalFeePaise: config.renewalFeePaise,
     });
   } catch (err) {
     console.error('referral config error', err);

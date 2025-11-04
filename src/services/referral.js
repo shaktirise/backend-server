@@ -50,17 +50,55 @@ function parseLevelPercentages() {
 }
 
 function parseMinActivationPaise() {
-  const raw = Number.parseInt(process.env.REFERRAL_MIN_ACTIVATION_RUPEES || '1000', 10);
+  // Default activation on ₹2100 registration
+  const raw = Number.parseInt(process.env.REFERRAL_MIN_ACTIVATION_RUPEES || '2100', 10);
   if (!Number.isFinite(raw) || raw < 0) return 1000 * 100;
   return raw * 100;
 }
 
 export function getReferralConfig() {
   const levelPercentages = parseLevelPercentages();
-  const maxDepthEnv = Number.parseInt(process.env.REFERRAL_MAX_DEPTH || `${levelPercentages.length}`, 10);
+
+  // New fixed amount schedules (in paise)
+  const registrationAmountsPaise = (() => {
+    const raw = String(process.env.REFERRAL_REGISTRATION_AMOUNTS || '')
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .map((p) => Number.parseFloat(p))
+      .filter((n) => Number.isFinite(n) && n >= 0)
+      .map((n) => Math.round(n * 100));
+    if (raw.length) return raw;
+    // Default: [500, 100, 50 x 8]
+    return [500, 100, 50, 50, 50, 50, 50, 50, 50, 50].map((n) => n * 100);
+  })();
+
+  const renewalAmountsPaise = (() => {
+    const raw = String(process.env.REFERRAL_RENEWAL_AMOUNTS || '')
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .map((p) => Number.parseFloat(p))
+      .filter((n) => Number.isFinite(n) && n >= 0)
+      .map((n) => Math.round(n * 100));
+    if (raw.length) return raw;
+    // Default: [50 x 10]
+    return [50, 50, 50, 50, 50, 50, 50, 50, 50, 50].map((n) => n * 100);
+  })();
+
+  const registrationFeePaise = Math.round(
+    (Number.parseInt(process.env.REFERRAL_REGISTRATION_FEE_RUPEES || '2100', 10) || 2100) * 100,
+  );
+  const renewalFeePaise = Math.round(
+    (Number.parseInt(process.env.REFERRAL_RENEWAL_FEE_RUPEES || '1000', 10) || 1000) * 100,
+  );
+
+  const fixedDepth = Math.max(registrationAmountsPaise.length, renewalAmountsPaise.length) || 0;
+  const defaultDepth = fixedDepth || levelPercentages.length;
+  const maxDepthEnv = Number.parseInt(process.env.REFERRAL_MAX_DEPTH || `${defaultDepth}`, 10);
   const maxDepth = Number.isFinite(maxDepthEnv) && maxDepthEnv > 0
-    ? Math.min(maxDepthEnv, levelPercentages.length)
-    : levelPercentages.length;
+    ? Math.min(maxDepthEnv, defaultDepth)
+    : defaultDepth;
 
   const shareBaseUrl = process.env.REFERRAL_SHARE_BASE_URL || process.env.APP_DOWNLOAD_URL || '';
 
@@ -69,6 +107,10 @@ export function getReferralConfig() {
     maxDepth,
     minActivationPaise: parseMinActivationPaise(),
     shareBaseUrl,
+    registrationAmountsPaise,
+    renewalAmountsPaise,
+    registrationFeePaise,
+    renewalFeePaise,
   };
 }
 
@@ -158,12 +200,21 @@ export async function handleReferralTopupPayout({
   topupAmountPaise,
   sourceLedger,
   session,
+  // Optional hint to force a schedule: 'REGISTRATION' | 'RENEWAL'
+  kind,
 }) {
   if (!userId || !sourceLedger) return { payouts: [], activated: false };
   if (!Number.isFinite(topupAmountPaise) || topupAmountPaise <= 0) return { payouts: [], activated: false };
 
   const config = getReferralConfig();
-  const depth = Math.min(config.maxDepth, config.levelPercentages.length);
+  const depth = Math.min(
+    config.maxDepth,
+    Math.max(
+      config.registrationAmountsPaise.length,
+      config.renewalAmountsPaise.length,
+      config.levelPercentages.length,
+    ),
+  );
   if (!depth) return { payouts: [], activated: false };
 
   const query = User.findById(userId).select(
@@ -264,11 +315,22 @@ export async function handleReferralTopupPayout({
   const payouts = [];
   const bonusDocs = [];
 
-  for (let level = 0; level < ancestors.length; level += 1) {
-    const percentage = config.levelPercentages[level] || 0;
-    if (percentage <= 0) continue;
+  // Decide amounts by level
+  let amountsByLevel = [];
+  const near = (a, b) => Math.abs(a - b) <= 100; // ₹1 tolerance
+  const isRegistration = kind === 'REGISTRATION' || near(topupAmountPaise, config.registrationFeePaise);
+  const isRenewal = kind === 'RENEWAL' || near(topupAmountPaise, config.renewalFeePaise);
+  if (isRegistration) {
+    amountsByLevel = config.registrationAmountsPaise;
+  } else if (isRenewal) {
+    amountsByLevel = config.renewalAmountsPaise;
+  } else {
+    // Fallback to percentage schedule for any other top-up amount
+    amountsByLevel = config.levelPercentages.map((p) => Math.floor(topupAmountPaise * p));
+  }
 
-    const creditAmount = Math.floor(topupAmountPaise * percentage);
+  for (let level = 0; level < ancestors.length; level += 1) {
+    const creditAmount = Math.floor(amountsByLevel[level] || 0);
     if (creditAmount <= 0) continue;
 
     const ancestor = ancestors[level];

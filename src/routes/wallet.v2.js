@@ -7,7 +7,7 @@ import Wallet from '../models/Wallet.js';
 import WalletLedger from '../models/WalletLedger.js';
 import { WALLET_LEDGER_TYPES } from '../constants/walletLedger.js';
 import { ensureWallet } from '../services/wallet.js';
-import { handleReferralTopupPayout } from '../services/referral.js';
+import { handleReferralTopupPayout, getReferralConfig } from '../services/referral.js';
 import Purchase from '../models/Purchase.js';
 
 const router = express.Router();
@@ -36,8 +36,8 @@ function buildShortReceipt(userId) {
 }
 
 const MIN_TOPUP_RUPEES = (() => {
-  const raw = Number.parseInt(process.env.MIN_TOPUP_RUPEES || '2100', 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : 2100;
+  const raw = Number.parseInt(process.env.MIN_TOPUP_RUPEES || '1000', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 1000;
 })();
 const MIN_TOPUP_PAISE = MIN_TOPUP_RUPEES * 100;
 
@@ -184,11 +184,20 @@ router.post('/topups/verify', async (req, res) => {
           { session },
         );
 
+        const cfg = getReferralConfig();
+        const near = (a, b) => Math.abs(a - b) <= 100; // ₹1 tolerance
+        const kind = near(creditAmount, cfg.registrationFeePaise)
+          ? 'REGISTRATION'
+          : near(creditAmount, cfg.renewalFeePaise)
+            ? 'RENEWAL'
+            : undefined;
+
         referralResult = await handleReferralTopupPayout({
           userId,
           topupAmountPaise: creditAmount,
           sourceLedger: ledgerEntry,
           session,
+          kind,
         });
       });
     } finally {

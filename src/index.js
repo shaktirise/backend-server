@@ -18,6 +18,7 @@ import segmentRoutes from './routes/segments.js';
 import imageRoutes from './routes/images.js';
 import adminDashboardRoutes from './routes/admin.dashboard.js';
 import dailyTipRoutes from './routes/dailyTip.js';
+import mlmRoutes from './routes/mlm.js';
 import tradeMessageRoutes from './routes/tradeMessages.js';
 import Wallet from './models/Wallet.js';
 import WalletLedger from './models/WalletLedger.js';
@@ -206,6 +207,7 @@ app.use('/api/segments', segmentRoutes);
 app.use('/api/images', imageRoutes);
 app.use('/api/daily-tip', dailyTipRoutes);
 app.use('/api/trade-messages', tradeMessageRoutes);
+app.use('/api/mlm', mlmRoutes);
 
 // Return JSON for unknown API routes instead of Express HTML
 app.use('/api', (req, res, next) => {
