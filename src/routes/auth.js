@@ -562,6 +562,59 @@ router.get('/referrals/earnings', auth, async (req, res) => {
   }
 });
 
+// Check level-1 commission entries for a specific downline
+router.get('/referrals/level1', auth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const downlineId = String(req.query?.downlineId || '').trim();
+
+    if (!downlineId || !mongoose.Types.ObjectId.isValid(downlineId)) {
+      return res.status(400).json({ error: 'invalid downlineId' });
+    }
+
+    const entries = await ReferralLedger.find({
+      userId,
+      level: 1,
+      sourceUserId: downlineId,
+    })
+      .sort({ createdAt: -1 })
+      .select('amountPaise note createdAt status level sourceUserId topupExtRef withdrawalRequestId')
+      .lean();
+
+    const totals = entries.reduce(
+      (acc, entry) => {
+        const amount = entry.amountPaise || 0;
+        if (entry.status === 'paid') acc.paid += amount;
+        else if (entry.status === 'cancelled') acc.cancelled += amount;
+        else acc.pending += amount;
+        return acc;
+      },
+      { pending: 0, paid: 0, cancelled: 0 },
+    );
+
+    return res.json({
+      downlineId,
+      count: entries.length,
+      totalEarnedPaise: totals.pending + totals.paid,
+      totalPendingPaise: totals.pending,
+      totalPaidPaise: totals.paid,
+      totalCancelledPaise: totals.cancelled,
+      entries: entries.map((e) => ({
+        id: e._id,
+        amountPaise: e.amountPaise,
+        status: e.status,
+        createdAt: e.createdAt,
+        note: e.note,
+        topupExtRef: e.topupExtRef || null,
+        withdrawalRequestId: e.withdrawalRequestId || null,
+      })),
+    });
+  } catch (err) {
+    console.error('referral level1 check error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
 router.post('/referrals/withdraw', auth, async (req, res) => {
   const userId = req.user.id;
   const note = typeof req.body?.note === 'string' && req.body.note.trim() ? req.body.note.trim() : undefined;

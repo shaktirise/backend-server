@@ -35,11 +35,11 @@ function buildShortReceipt(userId) {
   return receipt.slice(0, 40);
 }
 
-const MIN_TOPUP_RUPEES = (() => {
-  const raw = Number.parseInt(process.env.MIN_TOPUP_RUPEES || '1000', 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : 1000;
-})();
-const MIN_TOPUP_PAISE = MIN_TOPUP_RUPEES * 100;
+async function computeDynamicMinRupees(userId) {
+  const cfg = getReferralConfig();
+  const hasAnyDeposit = await WalletLedger.exists({ userId, type: WALLET_LEDGER_TYPES.DEPOSIT });
+  return hasAnyDeposit ? Math.round(cfg.renewalFeePaise / 100) : Math.round(cfg.registrationFeePaise / 100);
+}
 
 const GST_RATE = (() => {
   const raw = Number.parseFloat(process.env.GST_RATE || '0.18');
@@ -62,12 +62,14 @@ router.post('/topups/create-order', async (req, res) => {
     const userId = req.user.sub;
     const amountInRupees = Number.isFinite(req.body?.amountInRupees)
       ? Number(req.body.amountInRupees)
-      : MIN_TOPUP_RUPEES;
+      : undefined;
 
-    if (!Number.isFinite(amountInRupees) || amountInRupees < MIN_TOPUP_RUPEES) {
+    const minRupees = await computeDynamicMinRupees(userId);
+
+    if (!Number.isFinite(amountInRupees) || amountInRupees < minRupees) {
       return res.status(400).json({
         error: 'amount_below_minimum',
-        minimumRupees: MIN_TOPUP_RUPEES,
+        minimumRupees: minRupees,
       });
     }
 
@@ -98,7 +100,7 @@ router.post('/topups/create-order', async (req, res) => {
       order_id: order.id,
       amount: order.amount,
       currency: order.currency,
-      minimumRupees: MIN_TOPUP_RUPEES,
+      minimumRupees: minRupees,
     });
   } catch (e) {
     console.error('create-order error', e);
@@ -146,11 +148,13 @@ router.post('/topups/verify', async (req, res) => {
     if (!Number.isFinite(creditAmount) || creditAmount <= 0) {
       throw new Error('invalid_payment_amount');
     }
-    if (creditAmount < MIN_TOPUP_PAISE) {
+    const minRupees = await computeDynamicMinRupees(req.user.sub);
+    const minPaise = minRupees * 100;
+    if (creditAmount < minPaise) {
       return res.status(400).json({
         error: 'amount_below_minimum',
-        minimumPaise: MIN_TOPUP_PAISE,
-        minimumRupees: MIN_TOPUP_RUPEES,
+        minimumPaise: minPaise,
+        minimumRupees: minRupees,
       });
     }
 
