@@ -1,0 +1,208 @@
+{
+  "info": {
+    "name": "ShaktiRise API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_postman_id": "6e3f7a7c-bb9d-41de-8f1a-bf6c8a0a1234"
+  },
+  "item": [
+    {
+      "name": "Auth (User)",
+      "item": [
+        {
+          "name": "Signup",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/signup", "host": ["{{baseUrl}}"], "path": ["api","auth","signup"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Demo User\",\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\",\n  \"confirmPassword\": \"{{userPassword}}\",\n  \"referralCode\": \"\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api","auth","login"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "let json = {}; try { json = pm.response.json(); } catch(e) {}",
+                  "if (json && json.token) pm.environment.set('userToken', json.token);",
+                  "if (json && json.refreshToken) pm.environment.set('refreshToken', json.refreshToken);",
+                  "if (json && json.user && json.user.id) pm.environment.set('userId', json.user.id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Me",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{userToken}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/me", "host": ["{{baseUrl}}"], "path": ["api","auth","me"] }
+          }
+        },
+        {
+          "name": "Update Me (name)",
+          "request": {
+            "method": "PUT",
+            "header": [ { "key": "Authorization", "value": "Bearer {{userToken}}" }, { "key": "Content-Type", "value": "application/json" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/me", "host": ["{{baseUrl}}"], "path": ["api","auth","me"] },
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Demo User\"\n}" }
+          }
+        },
+        {
+          "name": "Refresh Token",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/refresh-token", "host": ["{{baseUrl}}"], "path": ["api","auth","refresh-token"] },
+            "body": { "mode": "raw", "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Wallet",
+      "item": [
+        {
+          "name": "Balance",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{userToken}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/wallet/balance", "host": ["{{baseUrl}}"], "path": ["api","wallet","balance"] }
+          }
+        },
+        {
+          "name": "History",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{userToken}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/wallet/history", "host": ["{{baseUrl}}"], "path": ["api","wallet","history"] }
+          }
+        },
+        {
+          "name": "Topup: Create Order",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Authorization", "value": "Bearer {{userToken}}" }, { "key": "Content-Type", "value": "application/json" } ],
+            "url": { "raw": "{{baseUrl}}/api/wallet/topups/create-order", "host": ["{{baseUrl}}"], "path": ["api","wallet","topups","create-order"] },
+            "body": { "mode": "raw", "raw": "{\n  \"amountInRupees\": 2100\n}" }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "let j={}; try{ j=pm.response.json(); }catch(e){}",
+                  "if (j && j.order_id) pm.environment.set('razorpay_order_id', j.order_id);",
+                  "if (j && j.amount) pm.environment.set('amount', j.amount);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Topup: Verify (Signature)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Authorization", "value": "Bearer {{userToken}}" }, { "key": "Content-Type", "value": "application/json" } ],
+            "url": { "raw": "{{baseUrl}}/api/wallet/topups/verify", "host": ["{{baseUrl}}"], "path": ["api","wallet","topups","verify"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"razorpay_order_id\": \"{{razorpay_order_id}}\",\n  \"razorpay_payment_id\": \"{{razorpay_payment_id}}\",\n  \"razorpay_signature\": \"{{razorpay_signature}}\",\n  \"amount\": {{amount}}\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "const secret = pm.environment.get('RZP_KEY_SECRET');",
+                  "const orderId = pm.environment.get('razorpay_order_id');",
+                  "const paymentId = 'pay_sim_' + Date.now();",
+                  "const body = orderId + '|' + paymentId;",
+                  "const signature = CryptoJS.HmacSHA256(body, secret).toString(CryptoJS.enc.Hex);",
+                  "pm.environment.set('razorpay_payment_id', paymentId);",
+                  "pm.environment.set('razorpay_signature', signature);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Debit: Purchase",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Authorization", "value": "Bearer {{userToken}}" }, { "key": "Content-Type", "value": "application/json" } ],
+            "url": { "raw": "{{baseUrl}}/api/wallet/debit", "host": ["{{baseUrl}}"], "path": ["api","wallet","debit"] },
+            "body": { "mode": "raw", "raw": "{\n  \"amountInRupees\": 99,\n  \"note\": \"Advice purchase\",\n  \"purchase\": { \"title\": \"Intraday Tip\", \"category\": \"NIFTY\", \"price\": 99 }\n}" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Referrals (User)",
+      "item": [
+        { "name": "My Referrals", "request": { "method": "GET", "header": [ {"key":"Authorization","value":"Bearer {{userToken}}"} ], "url": {"raw":"{{baseUrl}}/api/auth/referrals","host":["{{baseUrl}}"],"path":["api","auth","referrals"]} } },
+        { "name": "Referral Tree", "request": { "method": "GET", "header": [ {"key":"Authorization","value":"Bearer {{userToken}}"} ], "url": {"raw":"{{baseUrl}}/api/auth/referrals/tree?depth=10","host":["{{baseUrl}}"],"path":["api","auth","referrals","tree"],"query":[{"key":"depth","value":"10"}] } } },
+        { "name": "Earnings", "request": { "method": "GET", "header": [ {"key":"Authorization","value":"Bearer {{userToken}}"} ], "url": {"raw":"{{baseUrl}}/api/auth/referrals/earnings","host":["{{baseUrl}}"],"path":["api","auth","referrals","earnings"]} } },
+        { "name": "Withdraw (request)", "request": { "method": "POST", "header": [ {"key":"Authorization","value":"Bearer {{userToken}}"},{"key":"Content-Type","value":"application/json"} ], "url": {"raw":"{{baseUrl}}/api/auth/referrals/withdraw","host":["{{baseUrl}}"],"path":["api","auth","referrals","withdraw"]}, "body": {"mode":"raw","raw":"{\n  \"note\": \"Please settle\"\n}"} } },
+        { "name": "Withdrawals (list)", "request": { "method": "GET", "header": [ {"key":"Authorization","value":"Bearer {{userToken}}"} ], "url": {"raw":"{{baseUrl}}/api/auth/referrals/withdrawals","host":["{{baseUrl}}"],"path":["api","auth","referrals","withdrawals"]} } },
+        { "name": "Config", "request": { "method": "GET", "header": [ {"key":"Authorization","value":"Bearer {{userToken}}"} ], "url": {"raw":"{{baseUrl}}/api/auth/referrals/config","host":["{{baseUrl}}"],"path":["api","auth","referrals","config"]} } }
+      ]
+    },
+    {
+      "name": "Public Content",
+      "item": [
+        { "name": "Segments", "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/segments", "host": ["{{baseUrl}}"], "path": ["api","segments"] } } },
+        { "name": "Trade Messages", "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/trade-messages", "host": ["{{baseUrl}}"], "path": ["api","trade-messages"] } } },
+        { "name": "Daily Tip (latest)", "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/daily-tip/latest", "host": ["{{baseUrl}}"], "path": ["api","daily-tip","latest"] } } },
+        { "name": "Images (list)", "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/images", "host": ["{{baseUrl}}"], "path": ["api","images"] } } }
+      ]
+    },
+    {
+      "name": "Admin",
+      "item": [
+        {
+          "name": "Admin Signup",
+          "request": { "method": "POST", "header": [ {"key":"Content-Type","value":"application/json"} ], "url": {"raw":"{{baseUrl}}/api/auth/admin/signup","host":["{{baseUrl}}"],"path":["api","auth","admin","signup"]}, "body": {"mode":"raw","raw":"{\n  \"name\": \"Admin\",\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\",\n  \"confirmPassword\": \"{{adminPassword}}\"\n}"} }
+        },
+        {
+          "name": "Admin Login",
+          "request": { "method": "POST", "header": [ {"key":"Content-Type","value":"application/json"} ], "url": {"raw":"{{baseUrl}}/api/auth/login","host":["{{baseUrl}}"],"path":["api","auth","login"]}, "body": {"mode":"raw","raw":"{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}"} },
+          "event": [ { "listen": "test", "script": { "exec": ["let j={}; try{ j=pm.response.json(); }catch(e){}","if (j && j.token) pm.environment.set('adminToken', j.token);"], "type":"text/javascript" } } ]
+        },
+        { "name": "Admin Me", "request": { "method": "GET", "header": [ {"key":"Authorization","value":"Bearer {{adminToken}}"} ], "url": {"raw":"{{baseUrl}}/api/auth/admin/me","host":["{{baseUrl}}"],"path":["api","auth","admin","me"]} } },
+        { "name": "Dashboard Overview", "request": { "method": "GET", "header": [ {"key":"Authorization","value":"Bearer {{adminToken}}"} ], "url": {"raw":"{{baseUrl}}/api/admin/dashboard/overview","host":["{{baseUrl}}"],"path":["api","admin","dashboard","overview"]} } },
+        { "name": "Wallet Ledger (all)", "request": { "method": "GET", "header": [ {"key":"Authorization","value":"Bearer {{adminToken}}"} ], "url": {"raw":"{{baseUrl}}/api/admin/wallet-ledger","host":["{{baseUrl}}"],"path":["api","admin","wallet-ledger"]} } },
+        { "name": "User Summary", "request": { "method": "GET", "header": [ {"key":"Authorization","value":"Bearer {{adminToken}}"} ], "url": {"raw":"{{baseUrl}}/api/admin/users/{{userId}}/summary","host":["{{baseUrl}}"],"path":["api","admin","users","{{userId}}","summary"]} } },
+        { "name": "User Referral Tree", "request": { "method": "GET", "header": [ {"key":"Authorization","value":"Bearer {{adminToken}}"} ], "url": {"raw":"{{baseUrl}}/api/admin/users/{{userId}}/referral-tree","host":["{{baseUrl}}"],"path":["api","admin","users","{{userId}}","referral-tree"]} } },
+        { "name": "Daily Tip: Create", "request": { "method": "POST", "header": [ {"key":"Authorization","value":"Bearer {{adminToken}}"},{"key":"Content-Type","value":"application/json"} ], "url": {"raw":"{{baseUrl}}/api/admin/daily-tip","host":["{{baseUrl}}"],"path":["api","admin","daily-tip"]}, "body": {"mode":"raw","raw":"{\n  \"message\": \"Stay disciplined. Control risk.\"\n}"} } },
+        { "name": "Daily Tip: List", "request": { "method": "GET", "header": [ {"key":"Authorization","value":"Bearer {{adminToken}}"} ], "url": {"raw":"{{baseUrl}}/api/admin/daily-tip","host":["{{baseUrl}}"],"path":["api","admin","daily-tip"]} } },
+        { "name": "Images: Signature", "request": { "method": "POST", "header": [ {"key":"Authorization","value":"Bearer {{adminToken}}"},{"key":"Content-Type","value":"application/json"} ], "url": {"raw":"{{baseUrl}}/api/images/signature","host":["{{baseUrl}}"],"path":["api","images","signature"]}, "body": {"mode":"raw","raw":"{\n  \"folder\": \"banners\",\n  \"tags\": [\"home\", \"ad\"]\n}"} } },
+        { "name": "Images: Upload (data URL)", "request": { "method": "POST", "header": [ {"key":"Authorization","value":"Bearer {{adminToken}}"},{"key":"Content-Type","value":"application/json"} ], "url": {"raw":"{{baseUrl}}/api/images/upload","host":["{{baseUrl}}"],"path":["api","images","upload"]}, "body": {"mode":"raw","raw":"{\n  \"images\": [\n    \"data:image/png;base64,iVBORw0...\"\n  ]\n}"} } },
+        { "name": "Trade Msg: Upsert (NIFTY)", "request": { "method": "POST", "header": [ {"key":"Authorization","value":"Bearer {{adminToken}}"},{"key":"Content-Type","value":"application/json"} ], "url": {"raw":"{{baseUrl}}/api/trade-messages/NIFTY","host":["{{baseUrl}}"],"path":["api","trade-messages","NIFTY"]}, "body": {"mode":"raw","raw":"{\n  \"text\": \"BUY: ASIANPAINT 2900, TARGET: 2950, SL: 2870\"\n}"} } },
+        { "name": "Trade Msg: Send SMS (dry)", "request": { "method": "POST", "header": [ {"key":"Authorization","value":"Bearer {{adminToken}}"},{"key":"Content-Type","value":"application/json"},{"key":"x-dry-run","value":"true"} ], "url": {"raw":"{{baseUrl}}/api/trade-messages/NIFTY/send-sms","host":["{{baseUrl}}"],"path":["api","trade-messages","NIFTY","send-sms"]}, "body": {"mode":"raw","raw":"{\n  \"to\": \"+910000000000\"\n}"} } },
+        { "name": "Segments: Upsert (NIFTY)", "request": { "method": "POST", "header": [ {"key":"Authorization","value":"Bearer {{adminToken}}"},{"key":"Content-Type","value":"application/json"} ], "url": {"raw":"{{baseUrl}}/api/segments/NIFTY","host":["{{baseUrl}}"],"path":["api","segments","NIFTY"]}, "body": {"mode":"raw","raw":"{\n  \"message\": \"Nifty looks strong\"\n}"} } },
+        { "name": "Referral: Mark Entry Paid", "request": { "method": "PATCH", "header": [ {"key":"Authorization","value":"Bearer {{adminToken}}"},{"key":"Content-Type","value":"application/json"} ], "url": {"raw":"{{baseUrl}}/api/auth/admin/referrals/{{entryId}}/status","host":["{{baseUrl}}"],"path":["api","auth","admin","referrals","{{entryId}}","status"]}, "body": {"mode":"raw","raw":"{\n  \"status\": \"paid\"\n}"} } },
+        { "name": "MLM: Simulate Registration", "request": { "method": "POST", "header": [ {"key":"Authorization","value":"Bearer {{adminToken}}"},{"key":"Content-Type","value":"application/json"} ], "url": {"raw":"{{baseUrl}}/api/mlm/simulate","host":["{{baseUrl}}"],"path":["api","mlm","simulate"]}, "body": {"mode":"raw","raw":"{\n  \"userId\": \"{{userId}}\",\n  \"type\": \"REGISTRATION\"\n}"} } }
+      ]
+    }
+  ]
+}
+
