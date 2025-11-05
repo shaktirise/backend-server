@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import mongoose from 'mongoose';
 import { auth } from '../middleware/auth.js';
 import Wallet from '../models/Wallet.js';
+import User from '../models/User.js';
 import WalletLedger from '../models/WalletLedger.js';
 import { WALLET_LEDGER_TYPES } from '../constants/walletLedger.js';
 import { ensureWallet } from '../services/wallet.js';
@@ -35,10 +36,50 @@ function buildShortReceipt(userId) {
   return receipt.slice(0, 40);
 }
 
+// Minimum top-up rupees: prefer explicit env override, fallback to dynamic referral-based suggestion.
+const STATIC_MIN_TOPUP_RUPEES = (() => {
+  const raw = Number.parseInt(process.env.MIN_TOPUP_RUPEES || '0', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
+})();
+
 async function computeDynamicMinRupees(userId) {
+  if (STATIC_MIN_TOPUP_RUPEES > 0) return STATIC_MIN_TOPUP_RUPEES;
   const cfg = getReferralConfig();
-  const hasAnyDeposit = await WalletLedger.exists({ userId, type: WALLET_LEDGER_TYPES.DEPOSIT });
-  return hasAnyDeposit ? Math.round(cfg.renewalFeePaise / 100) : Math.round(cfg.registrationFeePaise / 100);
+
+  // 1) Fast path: if user already activated (from referrals), treat as renewal
+  try {
+    const u = await User.findById(userId).select('_id referralActivatedAt').lean().exec();
+    if (u?.referralActivatedAt) return Math.round(cfg.renewalFeePaise / 100);
+  } catch (err) {
+    // ignore and continue
+  }
+
+  // 2) Activation events (>= activation threshold) also mark as not-new
+  try {
+    const ActivationEvent = (await import('../models/ActivationEvent.js')).default;
+    const hasActivation = await ActivationEvent.exists({
+      userId,
+      status: 'SUCCEEDED',
+      amountPaise: { $gte: getReferralConfig().minActivationPaise },
+    });
+    if (hasActivation) return Math.round(cfg.renewalFeePaise / 100);
+  } catch (err) {
+    // ignore and continue
+  }
+
+  // 3) Legacy/new deposit check: any single qualifying deposit (>= registration fee)
+  const qualifyingDeposit = await WalletLedger.exists({
+    userId,
+    amount: { $gte: cfg.registrationFeePaise },
+    $or: [
+      { normalizedType: WALLET_LEDGER_TYPES.DEPOSIT },
+      { type: { $in: [WALLET_LEDGER_TYPES.DEPOSIT, 'TOPUP'] } }, // include legacy
+    ],
+  });
+
+  return qualifyingDeposit
+    ? Math.round(cfg.renewalFeePaise / 100)
+    : Math.round(cfg.registrationFeePaise / 100);
 }
 
 const GST_RATE = (() => {
@@ -60,9 +101,11 @@ router.use(auth);
 router.post('/topups/create-order', async (req, res) => {
   try {
     const userId = req.user.sub;
-    const amountInRupees = Number.isFinite(req.body?.amountInRupees)
-      ? Number(req.body.amountInRupees)
-      : undefined;
+    // Accept amount as amountInRupees (preferred) or amount (rupees) or amountPaise
+    const rawAmountInRupees =
+      req.body?.amountInRupees ??
+      (req.body?.amountPaise != null ? Number(req.body.amountPaise) / 100 : req.body?.amount);
+    const amountInRupees = Number.parseFloat(rawAmountInRupees);
 
     const minRupees = await computeDynamicMinRupees(userId);
 
@@ -141,10 +184,15 @@ router.post('/topups/verify', async (req, res) => {
       console.warn('payments.fetch failed; proceeding with signature-only verification');
     }
 
-    const fallbackAmount = Number.isFinite(Number(req.body?.amount))
-      ? Math.round(Number(req.body.amount))
-      : null;
-    const creditAmount = Number.isFinite(paymentAmount) ? paymentAmount : fallbackAmount;
+    // Fallback amount in paise if payment fetch is unavailable
+    const fallbackAmountPaise = (() => {
+      const amtPaise = Number(req.body?.amountPaise);
+      if (Number.isFinite(amtPaise)) return Math.round(amtPaise);
+      const amtRupees = Number(req.body?.amountInRupees ?? req.body?.amount);
+      if (Number.isFinite(amtRupees)) return Math.round(amtRupees * 100);
+      return null;
+    })();
+    const creditAmount = Number.isFinite(paymentAmount) ? paymentAmount : fallbackAmountPaise;
     if (!Number.isFinite(creditAmount) || creditAmount <= 0) {
       throw new Error('invalid_payment_amount');
     }
