@@ -35,8 +35,9 @@ const REFRESH_TOKEN_TTL_SEC = Number.isFinite(REFRESH_TOKEN_TTL_SEC_RAW)
   && REFRESH_TOKEN_TTL_SEC_RAW > 0
   ? REFRESH_TOKEN_TTL_SEC_RAW
   : null;
+// Lower default rounds to 10 to reduce login latency on small instances.
 const REFRESH_TOKEN_BCRYPT_ROUNDS = parseInt(
-  process.env.REFRESH_TOKEN_BCRYPT_ROUNDS || '12',
+  process.env.REFRESH_TOKEN_BCRYPT_ROUNDS || '10',
   10,
 );
 
@@ -121,12 +122,23 @@ function serializeWithdrawalRequest(doc) {
 }
 
 async function finalizeAuthSuccess(user, req) {
-  await ensureReferralCode(user);
+  const t0 = Date.now();
+  if (!user.referralCode) {
+    await ensureReferralCode(user);
+  }
+  const t1 = Date.now();
   user.lastLoginAt = new Date();
   user.lastLoginIp = req.ip;
   user.loginCount = (user.loginCount || 0) + 1;
   const tokens = await issueAuthTokens(user);
+  const t2 = Date.now();
   await user.save();
+  const t3 = Date.now();
+  if (process.env.AUTH_TIMING_LOG === '1') {
+    console.log(
+      `auth timing: ensureCode=${t1 - t0}ms issueTokens=${t2 - t1}ms save=${t3 - t2}ms total=${t3 - t0}ms`
+    );
+  }
   return tokens;
 }
 

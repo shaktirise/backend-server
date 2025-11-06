@@ -27,7 +27,7 @@ const REFRESH_TOKEN_TTL_SEC_RAW = Number.parseInt(process.env.REFRESH_TOKEN_TTL_
 const REFRESH_TOKEN_TTL_SEC = Number.isFinite(REFRESH_TOKEN_TTL_SEC_RAW) && REFRESH_TOKEN_TTL_SEC_RAW > 0
   ? REFRESH_TOKEN_TTL_SEC_RAW
   : null;
-const REFRESH_TOKEN_BCRYPT_ROUNDS = parseInt(process.env.REFRESH_TOKEN_BCRYPT_ROUNDS || '12', 10);
+const REFRESH_TOKEN_BCRYPT_ROUNDS = parseInt(process.env.REFRESH_TOKEN_BCRYPT_ROUNDS || '10', 10);
 
 const REFERRAL_CONFIG = getReferralConfig();
 const FALLBACK_TREE_DEPTH = Math.max(1, REFERRAL_CONFIG.maxDepth || 3);
@@ -89,12 +89,20 @@ function buildUserPayload(user) {
 }
 
 async function finalizeAuthSuccess(user, req) {
+  const t0 = Date.now();
   user.lastLoginAt = new Date();
   user.lastLoginIp = req.ip;
   user.loginCount = (user.loginCount || 0) + 1;
   await ensureReferralCode(user);
+  const t1 = Date.now();
   await user.save();
-  return issueAuthTokens(user);
+  const t2 = Date.now();
+  const tokens = await issueAuthTokens(user);
+  const t3 = Date.now();
+  if (process.env.AUTH_TIMING_LOG === '1') {
+    console.log(`auth timing(simple): ensureCode+save=${t2 - t0}ms issueTokens=${t3 - t2}ms total=${t3 - t0}ms`);
+  }
+  return tokens;
 }
 
 // SIGNUP with optional referral code
