@@ -130,8 +130,12 @@ app.post('/api/webhooks/razorpay', bodyParser.raw({ type: '*/*' }), async (req, 
     if (!signature) return res.status(400).json({ error: 'missing_signature' });
 
     const secret = process.env.WEBHOOK_SECRET || '';
-    const computed = crypto.createHmac('sha256', secret).update(req.body).digest('base64');
-    if (computed !== signature) {
+    // Some integrations reference hex vs base64 for webhook signatures. Compute both for robustness.
+    const hmac = crypto.createHmac('sha256', secret).update(req.body);
+    const computedBase64 = hmac.digest('base64');
+    const computedHex = crypto.createHmac('sha256', secret).update(req.body).digest('hex');
+    const sig = String(signature).trim();
+    if (sig !== computedBase64 && sig !== computedHex) {
       return res.status(400).json({ error: 'invalid_signature' });
     }
 

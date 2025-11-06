@@ -24,7 +24,14 @@ function getRazorpay() {
     err.code = 'RZP_KEYS_MISSING';
     throw err;
   }
-  razorpayInstance = new Razorpay({ key_id, key_secret });
+  // Add a conservative timeout to avoid long hangs on Razorpay API calls
+  // (library supports passing timeout in ms)
+  try {
+    razorpayInstance = new Razorpay({ key_id, key_secret, timeout: 5000 });
+  } catch (_) {
+    // Fallback for older SDKs without timeout support
+    razorpayInstance = new Razorpay({ key_id, key_secret });
+  }
   return razorpayInstance;
 }
 
@@ -172,16 +179,22 @@ router.post('/topups/verify', async (req, res) => {
     const existing = await WalletLedger.findOne({ extRef: razorpay_payment_id }).lean();
     if (existing) return res.json({ ok: true });
 
+    // Attempt to fetch payment from Razorpay with a strict timeout to prevent long waits.
     let paymentAmount = null;
     try {
       const rzp = getRazorpay();
-      const pmt = await rzp.payments.fetch(razorpay_payment_id);
+      const fetchWithTimeout = (promise, ms) =>
+        Promise.race([
+          promise,
+          new Promise((_, reject) => setTimeout(() => reject(new Error('rzp_fetch_timeout')), ms)),
+        ]);
+      const pmt = await fetchWithTimeout(rzp.payments.fetch(razorpay_payment_id), 4000);
       if (!['captured', 'authorized'].includes(pmt.status)) {
         return res.status(400).json({ error: 'payment_not_captured' });
       }
       paymentAmount = Number(pmt.amount);
     } catch (fetchErr) {
-      console.warn('payments.fetch failed; proceeding with signature-only verification');
+      console.warn('payments.fetch failed or timed out; using fallback amount if provided');
     }
 
     // Fallback amount in paise if payment fetch is unavailable
@@ -194,7 +207,9 @@ router.post('/topups/verify', async (req, res) => {
     })();
     const creditAmount = Number.isFinite(paymentAmount) ? paymentAmount : fallbackAmountPaise;
     if (!Number.isFinite(creditAmount) || creditAmount <= 0) {
-      throw new Error('invalid_payment_amount');
+      // We could not fetch from Razorpay and client did not provide amount.
+      // Ask client to resend with amountPaise/amount to avoid server-side network fetch.
+      return res.status(400).json({ error: 'amount_required', message: 'Include amountPaise or amount in verify call' });
     }
     const minRupees = await computeDynamicMinRupees(req.user.sub);
     const minPaise = minRupees * 100;
