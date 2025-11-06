@@ -22,6 +22,7 @@ import mlmRoutes from './routes/mlm.js';
 import tradeMessageRoutes from './routes/tradeMessages.js';
 import deeplinkRoutes from './routes/deeplink.js';
 import kycAadhaarRoutes from './routes/kycAadhaar.js';
+import mockKycProviderRoutes from './routes/mockKycProvider.js';
 import Wallet from './models/Wallet.js';
 import WalletLedger from './models/WalletLedger.js';
 import { WALLET_LEDGER_TYPES } from './constants/walletLedger.js';
@@ -218,6 +219,8 @@ app.use('/api/mlm', mlmRoutes);
 app.use(deeplinkRoutes);
 // Aadhaar OTP KYC routes
 app.use('/api/kyc/aadhaar', kycAadhaarRoutes);
+// Local mock KYC provider for development/testing
+app.use('/mock-kyc', mockKycProviderRoutes);
 
 // Return JSON for unknown API routes instead of Express HTML
 app.use('/api', (req, res, next) => {
