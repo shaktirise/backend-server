@@ -390,6 +390,7 @@ export async function handleReferralTopupPayout({
               level: doc.level,
             },
             update: {
+              // Avoid path conflicts: only set metadata via $set
               $setOnInsert: {
                 createdAt: now,
                 uplineUserId: doc.uplineUserId,
@@ -399,9 +400,6 @@ export async function handleReferralTopupPayout({
                 amountPaise: doc.amountPaise,
                 status: doc.status,
                 note: doc.note,
-                metadata: {
-                  ...(doc.metadata || {}),
-                },
                 processedAt: null,
                 processedBy: null,
               },
