@@ -21,6 +21,7 @@ import dailyTipRoutes from './routes/dailyTip.js';
 import mlmRoutes from './routes/mlm.js';
 import tradeMessageRoutes from './routes/tradeMessages.js';
 import deeplinkRoutes from './routes/deeplink.js';
+import kycAadhaarRoutes from './routes/kycAadhaar.js';
 import Wallet from './models/Wallet.js';
 import WalletLedger from './models/WalletLedger.js';
 import { WALLET_LEDGER_TYPES } from './constants/walletLedger.js';
@@ -215,6 +216,8 @@ app.use('/api/trade-messages', tradeMessageRoutes);
 app.use('/api/mlm', mlmRoutes);
 // Deep linking: both API and root-level well-known endpoints
 app.use(deeplinkRoutes);
+// Aadhaar OTP KYC routes
+app.use('/api/kyc/aadhaar', kycAadhaarRoutes);
 
 // Return JSON for unknown API routes instead of Express HTML
 app.use('/api', (req, res, next) => {
