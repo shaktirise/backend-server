@@ -53,6 +53,17 @@ function isValidPassword(password) {
   return typeof password === 'string' && password.length >= 8 && password.length <= 128;
 }
 
+// Normalize mobile numbers to E.164 format.
+// Defaults 10-digit numbers to +91 (India) for Indian users.
+function toE164IndianDefault(phone) {
+  if (!phone) return null;
+  const raw = String(phone).replace(/\s|-/g, '');
+  if (raw.startsWith('+')) return raw;
+  if (/^\d{10}$/.test(raw)) return `+91${raw}`;
+  if (/^\d{11,15}$/.test(raw)) return `+${raw}`;
+  return null;
+}
+
 function signAccessToken(user) {
   const payload = {
     id: user._id.toString(),
@@ -145,6 +156,11 @@ async function finalizeAuthSuccess(user, req) {
 router.post('/signup', requestLimiter, async (req, res) => {
   try {
     const { name, email, password, confirmPassword, referralId } = req.body || {};
+    // Optional mobile number; normalize to E.164 (+91 default for 10-digit input)
+    const rawPhone = (req.body?.phone || req.body?.mobile || req.body?.mobileNumber || '')
+      .toString()
+      .trim();
+    const phone = rawPhone ? toE164IndianDefault(rawPhone) : null;
     const referralInput = normalizeReferralCodeInput(
       req.body?.referralCode || req.body?.referral || req.body?.refCode || referralId || '',
     );
@@ -161,11 +177,21 @@ router.post('/signup', requestLimiter, async (req, res) => {
     if (password !== confirmPassword) {
       return res.status(400).json({ error: 'passwords do not match' });
     }
+    if (rawPhone && !phone) {
+      return res.status(400).json({ error: 'valid Indian mobile required' });
+    }
 
     const emailNorm = String(email).trim().toLowerCase();
     const existing = await User.findOne({ email: emailNorm });
     if (existing) {
       return res.status(409).json({ error: 'email already registered' });
+    }
+
+    if (phone) {
+      const phoneExists = await User.findOne({ phone });
+      if (phoneExists) {
+        return res.status(409).json({ error: 'phone already registered' });
+      }
     }
 
     let referer = null;
@@ -181,6 +207,7 @@ router.post('/signup', requestLimiter, async (req, res) => {
       name: String(name).trim(),
       email: emailNorm,
       passwordHash,
+      ...(phone ? { phone } : {}),
     });
 
     if (referer) {
@@ -422,6 +449,26 @@ router.put('/me', auth, async (req, res) => {
 
     if (typeof req.body?.name === 'string' && isValidName(req.body.name)) {
       user.name = req.body.name.trim();
+    }
+
+    // Allow users to set/update their mobile number (info-only)
+    if (
+      typeof (req.body?.phone ?? req.body?.mobile ?? req.body?.mobileNumber) !== 'undefined'
+    ) {
+      const rawPhone = (req.body?.phone || req.body?.mobile || req.body?.mobileNumber || '')
+        .toString()
+        .trim();
+      const phone = rawPhone ? toE164IndianDefault(rawPhone) : null;
+      if (rawPhone && !phone) {
+        return res.status(400).json({ error: 'valid Indian mobile required' });
+      }
+      if (phone && phone !== user.phone) {
+        const exists = await User.findOne({ phone });
+        if (exists && exists._id.toString() !== user._id.toString()) {
+          return res.status(409).json({ error: 'phone already registered' });
+        }
+        user.phone = phone;
+      }
     }
 
     await ensureReferralCode(user);
