@@ -1,0 +1,136 @@
+{
+  "info": {
+    "name": "Referral Commission Withdraw Flow",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "User Login",
+      "request": {
+        "method": "POST",
+        "header": [ { "key": "Content-Type", "value": "application/json" } ],
+        "url": { "raw": "{{base_url}}/api/auth/login", "host": [ "{{base_url}}" ], "path": [ "api", "auth", "login" ] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{user_email}}\",\n  \"password\": \"{{user_password}}\"\n}\n"
+        }
+      },
+      "event": [ {
+        "listen": "test",
+        "script": { "type": "text/javascript", "exec": [
+          "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+          "let json={}; try{json=pm.response.json()}catch(e){}",
+          "if(json && json.token){ pm.environment.set('user_token', json.token); } else { pm.test('token present', function(){ pm.expect(false).to.be.true; }); }"
+        ] }
+      } ]
+    },
+    {
+      "name": "User: Get Referral Earnings",
+      "request": {
+        "method": "GET",
+        "header": [ { "key": "Authorization", "value": "Bearer {{user_token}}" } ],
+        "url": { "raw": "{{base_url}}/api/auth/referrals/earnings", "host": [ "{{base_url}}" ], "path": [ "api", "auth", "referrals", "earnings" ] }
+      },
+      "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [ "pm.test('status 200', function () { pm.response.to.have.status(200); });" ] } } ]
+    },
+    {
+      "name": "User: Create Referral Withdrawal (UPI)",
+      "request": {
+        "method": "POST",
+        "header": [ { "key": "Authorization", "value": "Bearer {{user_token}}" }, { "key": "Content-Type", "value": "application/json" } ],
+        "url": { "raw": "{{base_url}}/api/auth/referrals/withdraw", "host": [ "{{base_url}}" ], "path": [ "api", "auth", "referrals", "withdraw" ] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"method\": \"UPI\",\n  \"upiId\": \"{{upi_id}}\",\n  \"name\": \"{{contact_name}}\",\n  \"mobile\": \"{{contact_mobile}}\",\n  \"note\": \"Payout\"\n}\n"
+        }
+      },
+      "event": [ {
+        "listen": "test",
+        "script": { "type": "text/javascript", "exec": [
+          "pm.test('status 201', function () { pm.response.to.have.status(201); });",
+          "let json={}; try{json=pm.response.json()}catch(e){}",
+          "const id = json && json.request && json.request.id; if(id){ pm.environment.set('referral_request_id', id); } else { pm.test('request id present', function(){ pm.expect(false).to.be.true; }); }"
+        ] }
+      } ]
+    },
+    {
+      "name": "User: List My Referral Withdrawals",
+      "request": {
+        "method": "GET",
+        "header": [ { "key": "Authorization", "value": "Bearer {{user_token}}" } ],
+        "url": { "raw": "{{base_url}}/api/auth/referrals/withdrawals", "host": [ "{{base_url}}" ], "path": [ "api", "auth", "referrals", "withdrawals" ] }
+      },
+      "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [ "pm.test('status 200', function () { pm.response.to.have.status(200); });" ] } } ]
+    },
+    {
+      "name": "Admin Login",
+      "request": {
+        "method": "POST",
+        "header": [ { "key": "Content-Type", "value": "application/json" } ],
+        "url": { "raw": "{{base_url}}/api/auth/admin/login", "host": [ "{{base_url}}" ], "path": [ "api", "auth", "admin", "login" ] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{admin_email}}\",\n  \"password\": \"{{admin_password}}\"\n}\n"
+        }
+      },
+      "event": [ {
+        "listen": "test",
+        "script": { "type": "text/javascript", "exec": [
+          "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+          "let json={}; try{json=pm.response.json()}catch(e){}",
+          "if(json && json.token){ pm.environment.set('admin_token', json.token); } else { pm.test('admin token present', function(){ pm.expect(false).to.be.true; }); }"
+        ] }
+      } ]
+    },
+    {
+      "name": "Admin: List Pending Referral Withdrawals",
+      "request": {
+        "method": "GET",
+        "header": [ { "key": "Authorization", "value": "Bearer {{admin_token}}" } ],
+        "url": { "raw": "{{base_url}}/api/admin/referrals/withdrawals?status=pending", "host": [ "{{base_url}}" ], "path": [ "api", "admin", "referrals", "withdrawals" ], "query": [ { "key": "status", "value": "pending" } ] }
+      },
+      "event": [ {
+        "listen": "test",
+        "script": { "type": "text/javascript", "exec": [
+          "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+          "let json={}; try{json=pm.response.json()}catch(e){}",
+          "if(json && Array.isArray(json.items) && json.items.length){ pm.environment.set('admin_request_id', json.items[0].id); }"
+        ] }
+      } ]
+    },
+    {
+      "name": "Admin: Mark Referral Withdrawal Paid",
+      "request": {
+        "method": "PATCH",
+        "header": [ { "key": "Authorization", "value": "Bearer {{admin_token}}" }, { "key": "Content-Type", "value": "application/json" } ],
+        "url": { "raw": "{{base_url}}/api/admin/referrals/withdrawals/{{admin_request_id}}", "host": [ "{{base_url}}" ], "path": [ "api", "admin", "referrals", "withdrawals", "{{admin_request_id}}" ] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"status\": \"paid\",\n  \"paymentRef\": \"{{payment_ref}}\",\n  \"adminNote\": \"{{admin_note}}\"\n}\n"
+        }
+      },
+      "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [ "pm.test('status 200', function () { pm.response.to.have.status(200); });" ] } } ]
+    },
+    {
+      "name": "User: Get Referral Earnings (After Paid)",
+      "request": {
+        "method": "GET",
+        "header": [ { "key": "Authorization", "value": "Bearer {{user_token}}" } ],
+        "url": { "raw": "{{base_url}}/api/auth/referrals/earnings", "host": [ "{{base_url}}" ], "path": [ "api", "auth", "referrals", "earnings" ] }
+      },
+      "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [ "pm.test('status 200', function () { pm.response.to.have.status(200); });" ] } } ]
+    }
+  ],
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:4000" },
+    { "key": "user_email", "value": "user@example.com" },
+    { "key": "user_password", "value": "password123" },
+    { "key": "admin_email", "value": "admin@example.com" },
+    { "key": "admin_password", "value": "password123" },
+    { "key": "upi_id", "value": "user@upi" },
+    { "key": "contact_name", "value": "Arjun Kumar" },
+    { "key": "contact_mobile", "value": "9876543210" },
+    { "key": "payment_ref", "value": "UTR-DEMO-001" },
+    { "key": "admin_note", "value": "Marked paid (demo)" }
+  ]
+}

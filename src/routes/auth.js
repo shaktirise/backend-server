@@ -121,7 +121,18 @@ function serializeWithdrawalRequest(doc) {
     id: doc._id,
     amountPaise: doc.amountPaise,
     amountRupees: Number.isFinite(doc.amountPaise) ? Math.floor(doc.amountPaise / 100) : 0,
+    method: doc.method || null,
+    upiId: doc.upiId || null,
+    bank: {
+      accountName: doc.bankAccountName || null,
+      accountNumber: doc.bankAccountNumber || null,
+      ifsc: doc.bankIfsc || null,
+      bankName: doc.bankName || null,
+    },
+    contactName: doc.contactName || null,
+    contactMobile: doc.contactMobile || null,
     status: doc.status,
+    paymentRef: doc.paymentRef || null,
     note: doc.note || null,
     adminNote: doc.adminNote || null,
     ledgerCount: Array.isArray(doc.ledgerEntryIds) ? doc.ledgerEntryIds.length : 0,
@@ -677,6 +688,16 @@ router.get('/referrals/level1', auth, async (req, res) => {
 router.post('/referrals/withdraw', auth, async (req, res) => {
   const userId = req.user.id;
   const note = typeof req.body?.note === 'string' && req.body.note.trim() ? req.body.note.trim() : undefined;
+  // capture payout details (optional)
+  const methodRaw = (req.body?.method || '').toString().trim().toUpperCase();
+  const method = methodRaw === 'BANK' ? 'BANK' : 'UPI';
+  const upiId = req.body?.upiId || undefined;
+  const bankAccountName = req.body?.bankAccountName || undefined;
+  const bankAccountNumber = req.body?.bankAccountNumber || undefined;
+  const bankIfsc = req.body?.bankIfsc || undefined;
+  const bankName = req.body?.bankName || undefined;
+  const contactName = req.body?.name || req.body?.contactName || undefined;
+  const contactMobile = req.body?.mobile || req.body?.contactMobile || undefined;
   try {
     const existing = await ReferralWithdrawalRequest.findOne({ userId, status: 'pending' }).lean();
     if (existing) {
@@ -716,6 +737,14 @@ router.post('/referrals/withdraw', auth, async (req, res) => {
               userId,
               amountPaise,
               note,
+              method,
+              upiId,
+              bankAccountName,
+              bankAccountNumber,
+              bankIfsc,
+              bankName,
+              contactName,
+              contactMobile,
               ledgerEntryIds,
             },
           ],

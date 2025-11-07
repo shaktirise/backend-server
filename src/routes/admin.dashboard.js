@@ -55,9 +55,20 @@ function buildWithdrawalPayload(doc) {
     user: buildUserPublicProfile(doc.userId),
     amountPaise: doc.amountPaise,
     amountRupees: toRupees(doc.amountPaise),
+    method: doc.method || null,
+    upiId: doc.upiId || null,
+    bank: {
+      accountName: doc.bankAccountName || null,
+      accountNumber: doc.bankAccountNumber || null,
+      ifsc: doc.bankIfsc || null,
+      bankName: doc.bankName || null,
+    },
+    contactName: doc.contactName || null,
+    contactMobile: doc.contactMobile || null,
     status: doc.status,
     note: doc.note || null,
     adminNote: doc.adminNote || null,
+    paymentRef: doc.paymentRef || null,
     ledgerCount: Array.isArray(doc.ledgerEntryIds) ? doc.ledgerEntryIds.length : 0,
     processedAt: doc.processedAt || null,
     processedBy:
@@ -1419,6 +1430,9 @@ router.patch('/referrals/withdrawals/:requestId', async (req, res) => {
   const adminNote = typeof req.body?.adminNote === 'string' && req.body.adminNote.trim()
     ? req.body.adminNote.trim()
     : undefined;
+  const paymentRef = typeof req.body?.paymentRef === 'string' && req.body.paymentRef.trim()
+    ? req.body.paymentRef.trim()
+    : undefined;
 
   const session = await mongoose.startSession();
   let updatedRequest = null;
@@ -1446,6 +1460,7 @@ router.patch('/referrals/withdrawals/:requestId', async (req, res) => {
           );
         }
         request.status = 'paid';
+        if (paymentRef !== undefined) request.paymentRef = paymentRef;
       } else if (statusRaw === 'cancelled') {
         if (ledgerIds.length) {
           await ReferralLedger.updateMany(

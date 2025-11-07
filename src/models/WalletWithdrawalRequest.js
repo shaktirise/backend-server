@@ -2,36 +2,37 @@ import mongoose from 'mongoose';
 
 const { Schema } = mongoose;
 
-const ReferralWithdrawalRequestSchema = new Schema(
+const WalletWithdrawalRequestSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     amountPaise: { type: Number, required: true },
-    // Payout details (optional): captures user's preferred method and contact info at request time
-    method: { type: String, enum: ['UPI', 'BANK'], default: 'UPI' },
+    method: { type: String, enum: ['UPI', 'BANK'], required: true },
+
+    // UPI details
     upiId: { type: String, trim: true },
+
+    // Bank details
     bankAccountName: { type: String, trim: true },
     bankAccountNumber: { type: String, trim: true },
     bankIfsc: { type: String, trim: true },
     bankName: { type: String, trim: true },
+
+    // Contact details
     contactName: { type: String, trim: true },
     contactMobile: { type: String, trim: true },
 
-    status: {
-      type: String,
-      enum: ['pending', 'paid', 'cancelled'],
-      default: 'pending',
-      index: true,
-    },
+    note: { type: String, trim: true },
+
+    status: { type: String, enum: ['pending', 'paid', 'cancelled'], default: 'pending', index: true },
     paymentRef: { type: String, trim: true },
-    ledgerEntryIds: [{ type: Schema.Types.ObjectId, ref: 'ReferralLedger' }],
-    note: { type: String },
-    adminNote: { type: String },
     processedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     processedAt: { type: Date },
+    metadata: { type: Schema.Types.Mixed },
   },
   { timestamps: true },
 );
 
-ReferralWithdrawalRequestSchema.index({ status: 1, createdAt: -1 });
+WalletWithdrawalRequestSchema.index({ userId: 1, status: 1, createdAt: -1 });
 
-export default mongoose.model('ReferralWithdrawalRequest', ReferralWithdrawalRequestSchema);
+export default mongoose.model('WalletWithdrawalRequest', WalletWithdrawalRequestSchema);
+
