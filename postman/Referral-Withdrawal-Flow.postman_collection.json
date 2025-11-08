@@ -25,6 +25,15 @@
       } ]
     },
     {
+      "name": "Admin: Export Referral Withdrawals CSV",
+      "request": {
+        "method": "GET",
+        "header": [ { "key": "Authorization", "value": "Bearer {{admin_token}}" } ],
+        "url": { "raw": "{{base_url}}/api/admin/referrals/withdrawals/export.csv?status=pending", "host": [ "{{base_url}}" ], "path": [ "api", "admin", "referrals", "withdrawals", "export.csv" ], "query": [ { "key": "status", "value": "pending" } ] }
+      },
+      "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [ "pm.test('status 200', function () { pm.response.to.have.status(200); });" ] } } ]
+    },
+    {
       "name": "User: Get Referral Earnings",
       "request": {
         "method": "GET",

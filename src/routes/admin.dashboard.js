@@ -1415,6 +1415,102 @@ router.get('/referrals/withdrawals', async (req, res) => {
   }
 });
 
+// Export referral withdrawal requests as CSV for reconciliation
+router.get('/referrals/withdrawals/export.csv', async (req, res) => {
+  try {
+    const query = {};
+    const statusRaw = typeof req.query.status === 'string' ? req.query.status.trim().toLowerCase() : 'pending';
+    if (statusRaw && statusRaw !== 'all') {
+      const allowed = new Set(['pending', 'paid', 'cancelled']);
+      if (!allowed.has(statusRaw)) {
+        return res.status(400).json({ error: 'invalid_status' });
+      }
+      query.status = statusRaw;
+    }
+    const userId = toObjectId(req.query.userId);
+    if (userId) {
+      query.userId = userId;
+    }
+
+    const requests = await ReferralWithdrawalRequest.find(query)
+      .sort({ createdAt: -1 })
+      .populate('userId', 'name email phone role')
+      .populate('processedBy', 'name email phone role')
+      .lean();
+
+    const rows = [];
+    const header = [
+      'id',
+      'userName',
+      'userEmail',
+      'userPhone',
+      'amountPaise',
+      'amountRupees',
+      'method',
+      'upiId',
+      'bankAccountName',
+      'bankAccountNumber',
+      'bankIfsc',
+      'bankName',
+      'contactName',
+      'contactMobile',
+      'status',
+      'paymentRef',
+      'adminNote',
+      'createdAt',
+      'processedAt',
+      'processedByName',
+    ];
+    rows.push(header);
+
+    function toCsvValue(v) {
+      if (v === null || v === undefined) return '';
+      const str = String(v);
+      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        return '"' + str.replace(/"/g, '""') + '"';
+      }
+      return str;
+    }
+
+    requests.forEach((doc) => {
+      const user = doc.userId || {};
+      const processedBy = doc.processedBy || {};
+      const row = [
+        doc._id,
+        user.name || '',
+        user.email || '',
+        user.phone || '',
+        doc.amountPaise || 0,
+        Math.floor((doc.amountPaise || 0) / 100),
+        doc.method || '',
+        doc.upiId || '',
+        doc.bankAccountName || '',
+        doc.bankAccountNumber || '',
+        doc.bankIfsc || '',
+        doc.bankName || '',
+        doc.contactName || '',
+        doc.contactMobile || '',
+        doc.status || '',
+        doc.paymentRef || '',
+        doc.adminNote || '',
+        doc.createdAt ? new Date(doc.createdAt).toISOString() : '',
+        doc.processedAt ? new Date(doc.processedAt).toISOString() : '',
+        processedBy.name || (processedBy._id ? String(processedBy._id) : ''),
+      ];
+      rows.push(row.map(toCsvValue).join(','));
+    });
+
+    const csv = rows.map((r) => (Array.isArray(r) ? r.join(',') : r)).join('\n');
+    const filename = `referral_withdrawals_${new Date().toISOString().slice(0, 10)}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return res.status(200).send(csv);
+  } catch (err) {
+    console.error('admin withdrawal export error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
 router.patch('/referrals/withdrawals/:requestId', async (req, res) => {
   const { requestId } = req.params;
   if (!mongoose.Types.ObjectId.isValid(requestId)) {
