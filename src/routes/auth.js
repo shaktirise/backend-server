@@ -41,6 +41,11 @@ const REFRESH_TOKEN_BCRYPT_ROUNDS = parseInt(
   10,
 );
 
+// Password reset config
+const RESET_TOKEN_TTL_MIN = parseInt(process.env.RESET_TOKEN_TTL_MIN || '15', 10);
+const EXPOSE_RESET_TOKEN =
+  (process.env.EXPOSE_RESET_TOKEN === '1') || (process.env.NODE_ENV !== 'production');
+
 function isValidName(name) {
   return typeof name === 'string' && name.trim().length >= 2 && name.trim().length <= 100;
 }
@@ -272,6 +277,86 @@ router.post('/login', requestLimiter, async (req, res) => {
     });
   } catch (err) {
     console.error('login error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Request password reset token
+router.post('/forgot-password', requestLimiter, async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ error: 'valid email required' });
+    }
+
+    // Always respond 200 to avoid user enumeration
+    const user = await User.findOne({ email });
+    let resetTokenToExpose = null;
+    if (user && user.passwordHash) {
+      const raw = crypto.randomBytes(24).toString('hex');
+      const hash = await bcrypt.hash(raw, REFRESH_TOKEN_BCRYPT_ROUNDS);
+      user.resetPasswordTokenHash = hash;
+      user.resetPasswordExpiresAt = new Date(Date.now() + Math.max(1, RESET_TOKEN_TTL_MIN) * 60 * 1000);
+      await user.save();
+      if (EXPOSE_RESET_TOKEN) resetTokenToExpose = raw;
+      // In production, you should email/SMS the token or a link containing it.
+    }
+
+    return res.json({ ok: true, ...(resetTokenToExpose ? { resetToken: resetTokenToExpose } : {}) });
+  } catch (err) {
+    console.error('forgot-password error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Reset password using token
+router.post('/reset-password', requestLimiter, async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const token = String(req.body?.token || '').trim();
+    const password = String(req.body?.password || '');
+    const confirmPassword =
+      req.body?.confirmPassword ?? req.body?.confirmPass ?? req.body?.confirmpass;
+
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ error: 'valid email required' });
+    }
+    if (!token) {
+      return res.status(400).json({ error: 'token required' });
+    }
+    if (!isValidPassword(password)) {
+      return res.status(400).json({ error: 'password must be 8-128 chars' });
+    }
+    if (password !== confirmPassword) {
+      return res.status(400).json({ error: 'passwords do not match' });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user || !user.resetPasswordTokenHash || !user.resetPasswordExpiresAt) {
+      return res.status(400).json({ error: 'invalid_or_expired_token' });
+    }
+
+    if (user.resetPasswordExpiresAt.getTime() < Date.now()) {
+      return res.status(400).json({ error: 'invalid_or_expired_token' });
+    }
+
+    const ok = await bcrypt.compare(token, user.resetPasswordTokenHash);
+    if (!ok) {
+      return res.status(400).json({ error: 'invalid_or_expired_token' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+    user.passwordHash = passwordHash;
+    user.resetPasswordTokenHash = undefined;
+    user.resetPasswordExpiresAt = undefined;
+    // Invalidate any existing refresh token on password reset
+    user.refreshTokenHash = undefined;
+    user.refreshTokenExpiresAt = undefined;
+    await user.save();
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('reset-password error', err);
     return res.status(500).json({ error: 'server error' });
   }
 });
