@@ -110,6 +110,8 @@ function buildUserPayload(user) {
     phone: user.phone || null,
     role: user.role,
     walletBalance: user.walletBalance,
+    accountStatus: user.accountStatus,
+    accountActiveUntil: user.accountActiveUntil || null,
     referralCode: user.referralCode,
     referralShareLink: buildReferralShareLink(user.referralCode),
     referralCount: user.referralCount || 0,
@@ -118,6 +120,26 @@ function buildUserPayload(user) {
     pendingReferredBy: user.pendingReferredBy ? user.pendingReferredBy.toString() : null,
     lastLoginAt: user.lastLoginAt || null,
   };
+}
+
+function syncAccountStatus(user) {
+  // Manage only ACTIVE/INACTIVE automatically; respect SUSPENDED/DEACTIVATED
+  if (user.accountStatus === 'SUSPENDED' || user.accountStatus === 'DEACTIVATED') return false;
+  const now = Date.now();
+  const until = user.accountActiveUntil ? user.accountActiveUntil.getTime() : 0;
+  let changed = false;
+  if (until > now) {
+    if (user.accountStatus !== 'ACTIVE') {
+      user.accountStatus = 'ACTIVE';
+      changed = true;
+    }
+  } else {
+    if (user.accountStatus !== 'INACTIVE') {
+      user.accountStatus = 'INACTIVE';
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 function serializeWithdrawalRequest(doc) {
@@ -157,6 +179,8 @@ async function finalizeAuthSuccess(user, req) {
   user.lastLoginAt = new Date();
   user.lastLoginIp = req.ip;
   user.loginCount = (user.loginCount || 0) + 1;
+  // Auto-sync membership status based on expiry
+  syncAccountStatus(user);
   const tokens = await issueAuthTokens(user);
   const t2 = Date.now();
   await user.save();

@@ -9,6 +9,17 @@ const UserSchema = new mongoose.Schema(
     role: { type: String, enum: ['user', 'admin'], default: 'user', index: true },
     walletBalance: { type: Number, default: 0 },
 
+    accountStatus: {
+      type: String,
+      enum: ['ACTIVE', 'SUSPENDED', 'DEACTIVATED', 'INACTIVE'],
+      default: 'INACTIVE',
+      index: true,
+    },
+
+    // Membership activation/validity tracking
+    accountActivatedAt: { type: Date },
+    accountActiveUntil: { type: Date, index: true },
+
     otpHash: { type: String },
     otpExpiresAt: { type: Date },
 

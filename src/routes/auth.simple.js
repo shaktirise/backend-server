@@ -80,6 +80,8 @@ function buildUserPayload(user) {
     phone: user.phone,
     role: user.role,
     walletBalance: user.walletBalance,
+    accountStatus: user.accountStatus,
+    accountActiveUntil: user.accountActiveUntil || null,
     referralCode: user.referralCode,
     referralShareLink: buildReferralShareLink(user.referralCode),
     referralCount: user.referralCount || 0,
@@ -94,6 +96,15 @@ async function finalizeAuthSuccess(user, req) {
   user.lastLoginIp = req.ip;
   user.loginCount = (user.loginCount || 0) + 1;
   await ensureReferralCode(user);
+  // Auto-sync membership status based on expiry
+  if (user.accountStatus !== 'SUSPENDED' && user.accountStatus !== 'DEACTIVATED') {
+    const until = user.accountActiveUntil ? user.accountActiveUntil.getTime() : 0;
+    if (until > Date.now()) {
+      user.accountStatus = 'ACTIVE';
+    } else {
+      user.accountStatus = 'INACTIVE';
+    }
+  }
   const t1 = Date.now();
   await user.save();
   const t2 = Date.now();

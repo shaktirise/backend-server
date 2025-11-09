@@ -96,6 +96,16 @@ const GST_RATE = (() => {
 })();
 const GST_PERCENT = Math.round(GST_RATE * 100);
 
+// Membership validity durations (days)
+const ACCOUNT_REGISTRATION_VALID_DAYS = parseInt(
+  process.env.ACCOUNT_REGISTRATION_VALID_DAYS || '60',
+  10,
+);
+const ACCOUNT_RENEWAL_VALID_DAYS = parseInt(
+  process.env.ACCOUNT_RENEWAL_VALID_DAYS || '30',
+  10,
+);
+
 function parsePagination(query) {
   const limitRaw = Number.parseInt(query?.limit ?? '25', 10);
   const pageRaw = Number.parseInt(query?.page ?? '1', 10);
@@ -259,6 +269,27 @@ router.post('/topups/verify', async (req, res) => {
           : near(creditAmount, cfg.renewalFeePaise)
             ? 'RENEWAL'
             : undefined;
+
+        // Update membership validity for qualifying top-ups
+        if (kind === 'REGISTRATION' || kind === 'RENEWAL') {
+          const addDays = kind === 'REGISTRATION'
+            ? ACCOUNT_REGISTRATION_VALID_DAYS
+            : ACCOUNT_RENEWAL_VALID_DAYS;
+          const userDoc = await User.findById(userId).session(session);
+          if (userDoc) {
+            const nowDt = new Date();
+            const baseDt = (userDoc.accountActiveUntil && userDoc.accountActiveUntil.getTime() > nowDt.getTime())
+              ? userDoc.accountActiveUntil
+              : nowDt;
+            const newUntil = new Date(baseDt.getTime() + Math.max(1, addDays) * 24 * 60 * 60 * 1000);
+            userDoc.accountActivatedAt = nowDt;
+            userDoc.accountActiveUntil = newUntil;
+            if (userDoc.accountStatus !== 'SUSPENDED' && userDoc.accountStatus !== 'DEACTIVATED') {
+              userDoc.accountStatus = 'ACTIVE';
+            }
+            await userDoc.save({ session });
+          }
+        }
 
         referralResult = await handleReferralTopupPayout({
           userId,
