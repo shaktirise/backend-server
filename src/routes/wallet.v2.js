@@ -50,6 +50,24 @@ const STATIC_MIN_TOPUP_RUPEES = (() => {
   return Number.isFinite(raw) && raw > 0 ? raw : 0;
 })();
 
+// New env-configurable amounts
+const FIRST_TOPUP_REQUIRED_RUPEES = (() => {
+  const envVal = Number.parseInt(
+    process.env.FIRST_TOPUP_REQUIRED_RUPEES || process.env.REFERRAL_REGISTRATION_FEE_RUPEES || '2100',
+    10,
+  );
+  return Number.isFinite(envVal) && envVal > 0 ? envVal : 2100;
+})();
+const MIN_TOPUP_RUPEES_AFTER_ACTIVATION = (() => {
+  const envVal = Number.parseInt(
+    process.env.MIN_TOPUP_RUPEES_AFTER_ACTIVATION || process.env.REFERRAL_RENEWAL_FEE_RUPEES || '1000',
+    10,
+  );
+  return Number.isFinite(envVal) && envVal > 0 ? envVal : 1000;
+})();
+
+const AMOUNT_TOLERANCE_PAISE = 100; // ±₹1 tolerance
+
 async function computeDynamicMinRupees(userId) {
   const cfg = getReferralConfig();
 
@@ -100,6 +118,18 @@ async function computeDynamicMinRupees(userId) {
   return Math.max(dyn, STATIC_MIN_TOPUP_RUPEES);
 }
 
+async function isFirstTopup(userId) {
+  // First top-up if no deposit/top-up ledger entries exist yet
+  const exists = await WalletLedger.exists({
+    userId,
+    $or: [
+      { normalizedType: WALLET_LEDGER_TYPES.DEPOSIT },
+      { type: { $in: [WALLET_LEDGER_TYPES.DEPOSIT, 'TOPUP'] } },
+    ],
+  });
+  return !exists;
+}
+
 const GST_RATE = (() => {
   const raw = Number.parseFloat(process.env.GST_RATE || '0.18');
   return Number.isFinite(raw) && raw >= 0 ? raw : 0.18;
@@ -135,13 +165,30 @@ router.post('/topups/create-order', async (req, res) => {
       (req.body?.amountPaise != null ? Number(req.body.amountPaise) / 100 : req.body?.amount);
     const amountInRupees = Number.parseFloat(rawAmountInRupees);
 
-    const minRupees = await computeDynamicMinRupees(userId);
+    const firstTopup = await isFirstTopup(userId);
 
-    if (!Number.isFinite(amountInRupees) || amountInRupees < minRupees) {
-      return res.status(400).json({
-        error: 'amount_below_minimum',
-        minimumRupees: minRupees,
-      });
+    if (!Number.isFinite(amountInRupees)) {
+      return res.status(400).json({ error: 'invalid_amount' });
+    }
+
+    if (firstTopup) {
+      const requiredPaise = Math.round(FIRST_TOPUP_REQUIRED_RUPEES * 100);
+      const candidatePaise = Math.round(amountInRupees * 100);
+      if (Math.abs(candidatePaise - requiredPaise) > AMOUNT_TOLERANCE_PAISE) {
+        return res.status(400).json({
+          error: 'first_topup_must_equal',
+          requiredRupees: FIRST_TOPUP_REQUIRED_RUPEES,
+        });
+      }
+    } else {
+      const dynamicMin = await computeDynamicMinRupees(userId);
+      const floorMin = Math.max(dynamicMin, MIN_TOPUP_RUPEES_AFTER_ACTIVATION, STATIC_MIN_TOPUP_RUPEES);
+      if (amountInRupees < floorMin) {
+        return res.status(400).json({
+          error: 'amount_below_minimum',
+          minimumRupees: floorMin,
+        });
+      }
     }
 
     const amount = Math.round(amountInRupees * 100); // to paise
@@ -166,13 +213,23 @@ router.post('/topups/create-order', async (req, res) => {
       notes: { userId: String(userId) },
     });
 
-    return res.json({
+    const response = {
       key: process.env.RAZORPAY_KEY_ID,
       order_id: order.id,
       amount: order.amount,
       currency: order.currency,
-      minimumRupees: minRupees,
-    });
+    };
+    if (firstTopup) {
+      response.firstTopupRequiredRupees = FIRST_TOPUP_REQUIRED_RUPEES;
+    } else {
+      response.minimumRupees = Math.max(
+        await computeDynamicMinRupees(userId),
+        MIN_TOPUP_RUPEES_AFTER_ACTIVATION,
+        STATIC_MIN_TOPUP_RUPEES,
+      );
+    }
+
+    return res.json(response);
   } catch (e) {
     console.error('create-order error', e);
     if (process.env.NODE_ENV !== 'production') {
@@ -232,14 +289,27 @@ router.post('/topups/verify', async (req, res) => {
       // Ask client to resend with amountPaise/amount to avoid server-side network fetch.
       return res.status(400).json({ error: 'amount_required', message: 'Include amountPaise or amount in verify call' });
     }
-    const minRupees = await computeDynamicMinRupees(req.user.sub);
-    const minPaise = minRupees * 100;
-    if (creditAmount < minPaise) {
-      return res.status(400).json({
-        error: 'amount_below_minimum',
-        minimumPaise: minPaise,
-        minimumRupees: minRupees,
-      });
+    const firstTopup = await isFirstTopup(req.user.sub);
+    if (firstTopup) {
+      const requiredPaise = Math.round(FIRST_TOPUP_REQUIRED_RUPEES * 100);
+      if (Math.abs(creditAmount - requiredPaise) > AMOUNT_TOLERANCE_PAISE) {
+        return res.status(400).json({
+          error: 'first_topup_must_equal',
+          requiredPaise,
+          requiredRupees: FIRST_TOPUP_REQUIRED_RUPEES,
+        });
+      }
+    } else {
+      const dynamicMin = await computeDynamicMinRupees(req.user.sub);
+      const floorMin = Math.max(dynamicMin, MIN_TOPUP_RUPEES_AFTER_ACTIVATION, STATIC_MIN_TOPUP_RUPEES);
+      const minPaise = floorMin * 100;
+      if (creditAmount < minPaise) {
+        return res.status(400).json({
+          error: 'amount_below_minimum',
+          minimumPaise: minPaise,
+          minimumRupees: floorMin,
+        });
+      }
     }
 
     const session = await mongoose.startSession();
@@ -281,23 +351,33 @@ router.post('/topups/verify', async (req, res) => {
             : undefined;
 
         // Update membership validity for qualifying top-ups
-        if (kind === 'REGISTRATION' || kind === 'RENEWAL') {
-          const addDays = kind === 'REGISTRATION'
+        // Registration: only when amount ~ registration fee
+        // Renewal: on any amount >= renewal fee
+        {
+          const regFeePaise = getReferralConfig().registrationFeePaise;
+          const renFeePaise = getReferralConfig().renewalFeePaise;
+          const isRegistration = kind === 'REGISTRATION';
+          const isRenewal = kind === 'RENEWAL' || (!isRegistration && creditAmount >= renFeePaise);
+          const addDays = isRegistration
             ? ACCOUNT_REGISTRATION_VALID_DAYS
-            : ACCOUNT_RENEWAL_VALID_DAYS;
-          const userDoc = await User.findById(userId).session(session);
-          if (userDoc) {
-            const nowDt = new Date();
-            const baseDt = (userDoc.accountActiveUntil && userDoc.accountActiveUntil.getTime() > nowDt.getTime())
-              ? userDoc.accountActiveUntil
-              : nowDt;
-            const newUntil = new Date(baseDt.getTime() + Math.max(1, addDays) * 24 * 60 * 60 * 1000);
-            userDoc.accountActivatedAt = nowDt;
-            userDoc.accountActiveUntil = newUntil;
-            if (userDoc.accountStatus !== 'SUSPENDED' && userDoc.accountStatus !== 'DEACTIVATED') {
-              userDoc.accountStatus = 'ACTIVE';
+            : isRenewal
+              ? ACCOUNT_RENEWAL_VALID_DAYS
+              : 0;
+          if (addDays > 0) {
+            const userDoc = await User.findById(userId).session(session);
+            if (userDoc) {
+              const nowDt = new Date();
+              const baseDt = (userDoc.accountActiveUntil && userDoc.accountActiveUntil.getTime() > nowDt.getTime())
+                ? userDoc.accountActiveUntil
+                : nowDt;
+              const newUntil = new Date(baseDt.getTime() + Math.max(1, addDays) * 24 * 60 * 60 * 1000);
+              userDoc.accountActivatedAt = nowDt;
+              userDoc.accountActiveUntil = newUntil;
+              if (userDoc.accountStatus !== 'SUSPENDED' && userDoc.accountStatus !== 'DEACTIVATED') {
+                userDoc.accountStatus = 'ACTIVE';
+              }
+              await userDoc.save({ session });
             }
-            await userDoc.save({ session });
           }
         }
 
