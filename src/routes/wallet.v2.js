@@ -44,20 +44,22 @@ function buildShortReceipt(userId) {
   return receipt.slice(0, 40);
 }
 
-// Minimum top-up rupees: prefer explicit env override, fallback to dynamic referral-based suggestion.
+// Minimum top-up rupees floor (optional). If set, it acts as a floor over dynamic rules.
 const STATIC_MIN_TOPUP_RUPEES = (() => {
   const raw = Number.parseInt(process.env.MIN_TOPUP_RUPEES || '0', 10);
   return Number.isFinite(raw) && raw > 0 ? raw : 0;
 })();
 
 async function computeDynamicMinRupees(userId) {
-  if (STATIC_MIN_TOPUP_RUPEES > 0) return STATIC_MIN_TOPUP_RUPEES;
   const cfg = getReferralConfig();
 
   // 1) Fast path: if user already activated (from referrals), treat as renewal
   try {
     const u = await User.findById(userId).select('_id referralActivatedAt').lean().exec();
-    if (u?.referralActivatedAt) return Math.round(cfg.renewalFeePaise / 100);
+    if (u?.referralActivatedAt) {
+      const dyn = Math.round(cfg.renewalFeePaise / 100);
+      return Math.max(dyn, STATIC_MIN_TOPUP_RUPEES);
+    }
   } catch (err) {
     // ignore and continue
   }
@@ -70,7 +72,10 @@ async function computeDynamicMinRupees(userId) {
       status: 'SUCCEEDED',
       amountPaise: { $gte: getReferralConfig().minActivationPaise },
     });
-    if (hasActivation) return Math.round(cfg.renewalFeePaise / 100);
+    if (hasActivation) {
+      const dyn = Math.round(cfg.renewalFeePaise / 100);
+      return Math.max(dyn, STATIC_MIN_TOPUP_RUPEES);
+    }
   } catch (err) {
     // ignore and continue
   }
@@ -85,9 +90,14 @@ async function computeDynamicMinRupees(userId) {
     ],
   });
 
-  return qualifyingDeposit
-    ? Math.round(cfg.renewalFeePaise / 100)
-    : Math.round(cfg.registrationFeePaise / 100);
+  if (qualifyingDeposit) {
+    const dyn = Math.round(cfg.renewalFeePaise / 100);
+    return Math.max(dyn, STATIC_MIN_TOPUP_RUPEES);
+  }
+
+  // Default: registration minimum for first activation
+  const dyn = Math.round(cfg.registrationFeePaise / 100);
+  return Math.max(dyn, STATIC_MIN_TOPUP_RUPEES);
 }
 
 const GST_RATE = (() => {
