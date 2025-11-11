@@ -27,6 +27,7 @@ import {
   ensureInt,
   toRupees,
 } from '../utils/admin.js';
+import { ensureReferralCode } from '../services/referral.js';
 
 const router = express.Router();
 
@@ -45,6 +46,7 @@ function buildUserPublicProfile(user) {
     referralCode: user.referralCode || null,
     referralCount: user.referralCount || 0,
     loginCount: user.loginCount || 0,
+    isDemo: Boolean(user.isDemo),
   };
 }
 
@@ -1007,7 +1009,14 @@ router.get('/users/:userId/referral-tree', async (req, res) => {
       });
     }
 
-    return res.json({
+    const includeFlat =
+      String(req.query.flat || '') === '1'
+      || String(req.query.flat || '').toLowerCase() === 'true';
+    const includeEmailsOnly =
+      String(req.query.emailsOnly || '') === '1'
+      || String(req.query.emailsOnly || '').toLowerCase() === 'true';
+
+    const responsePayload = {
       timeframe: {
         from: from ? from.toISOString() : null,
         to: to ? to.toISOString() : null,
@@ -1015,7 +1024,29 @@ router.get('/users/:userId/referral-tree', async (req, res) => {
       depth,
       usedClosure,
       levels: levelsResponse,
-    });
+    };
+
+    if (includeFlat) {
+      const flat = [];
+      levelsResponse.forEach((lvl) => {
+        lvl.descendants.forEach((d) => {
+          flat.push({ level: lvl.level, id: d.id, user: d.user, earnings: d.earnings });
+        });
+      });
+      responsePayload.flat = flat;
+    }
+
+    if (includeEmailsOnly) {
+      const emails = [];
+      levelsResponse.forEach((lvl) => {
+        lvl.descendants.forEach((d) => {
+          if (d?.user?.email) emails.push(d.user.email);
+        });
+      });
+      responsePayload.emails = emails;
+    }
+
+    return res.json(responsePayload);
   } catch (err) {
     console.error('admin referral tree error', err);
     return res.status(500).json({ error: 'server error' });
@@ -1909,6 +1940,68 @@ router.get('/users/:userId', async (req, res) => {
     });
   } catch (err) {
     console.error('admin user detail error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Admin utility: seed demo users who are always active, can refer, but cannot withdraw referral amounts
+// POST /api/admin/demo/users/seed  { count?: number, baseEmail?: string, password?: string }
+router.post('/demo/users/seed', async (req, res) => {
+  try {
+    const countRaw = Number.parseInt(req.body?.count ?? '7', 10);
+    const count = Number.isFinite(countRaw) ? Math.min(Math.max(countRaw, 1), 50) : 7;
+    const baseEmail = (req.body?.baseEmail || 'demo{{n}}@test.com').toString();
+    const password = (req.body?.password || 'Demo@12345').toString();
+
+    const created = [];
+    for (let i = 1; i <= count; i += 1) {
+      const email = baseEmail.includes('{{n}}')
+        ? baseEmail.replace(/\{\{n\}\}/g, String(i))
+        : baseEmail.replace('@', `+${i}@`);
+
+      const emailNorm = email.trim().toLowerCase();
+      let user = await User.findOne({ email: emailNorm });
+      const passwordHash = await bcrypt.hash(password, 10);
+
+      if (!user) {
+        user = new User({
+          name: `Demo ${i}`,
+          email: emailNorm,
+          passwordHash,
+          role: 'user',
+          isDemo: true,
+          accountStatus: 'ACTIVE',
+          accountActivatedAt: new Date(),
+          accountActiveUntil: new Date('2099-12-31T23:59:59.999Z'),
+        });
+        await ensureReferralCode(user);
+        await user.save();
+      } else {
+        // Update existing to ensure demo flags and active status; also reset password
+        user.isDemo = true;
+        user.passwordHash = passwordHash;
+        user.accountStatus = 'ACTIVE';
+        user.accountActivatedAt = user.accountActivatedAt || new Date();
+        user.accountActiveUntil = new Date('2099-12-31T23:59:59.999Z');
+        await ensureReferralCode(user);
+        await user.save();
+      }
+
+      created.push({
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        password,
+        referralCode: user.referralCode,
+        isDemo: true,
+        accountStatus: user.accountStatus,
+        accountActiveUntil: user.accountActiveUntil,
+      });
+    }
+
+    return res.status(201).json({ count: created.length, users: created });
+  } catch (err) {
+    console.error('admin demo users seed error', err);
     return res.status(500).json({ error: 'server error' });
   }
 });

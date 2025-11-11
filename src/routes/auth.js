@@ -808,6 +808,12 @@ router.post('/referrals/withdraw', auth, async (req, res) => {
   const contactName = req.body?.name || req.body?.contactName || undefined;
   const contactMobile = req.body?.mobile || req.body?.contactMobile || undefined;
   try {
+    // Block demo users from withdrawing referral amounts
+    const u = await User.findById(userId).select('isDemo').lean();
+    if (u?.isDemo) {
+      return res.status(403).json({ error: 'demo_accounts_cannot_withdraw' });
+    }
+
     const existing = await ReferralWithdrawalRequest.findOne({ userId, status: 'pending' }).lean();
     if (existing) {
       return res.status(409).json({

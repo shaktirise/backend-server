@@ -31,6 +31,9 @@ const UserSchema = new mongoose.Schema(
     referralActivatedAt: { type: Date },
     referralCount: { type: Number, default: 0 },
 
+    // Demo/test accounts: can refer without payments; referral withdrawals disabled
+    isDemo: { type: Boolean, default: false, index: true },
+
     pinHash: { type: String },
     pinSetAt: { type: Date },
 
