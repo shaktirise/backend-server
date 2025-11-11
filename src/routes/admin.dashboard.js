@@ -1664,6 +1664,10 @@ router.get('/users/:userId', async (req, res) => {
       return res.status(400).json({ error: 'invalid_user_id' });
     }
 
+    const { from, to } = parseDateRange(req.query);
+    const depthRaw = Number.parseInt(req.query.depth ?? req.query.levelDepth ?? '10', 10);
+    const depth = Number.isFinite(depthRaw) && depthRaw > 0 ? Math.min(depthRaw, 10) : 10;
+
     const [user, wallet, referralStats, recentPurchases, recentLedger] = await Promise.all([
       User.findById(userId)
         .select(
@@ -1742,6 +1746,139 @@ router.get('/users/:userId', async (req, res) => {
       createdAt: entry.createdAt,
     }));
 
+    const { levels, usedClosure } = await loadReferralTreeNodes(userId, depth);
+
+    const descendantIdSet = new Map();
+    levels.forEach((ids) => {
+      ids.forEach((id) => {
+        if (id) descendantIdSet.set(id.toString(), id);
+      });
+    });
+    const descendantIds = Array.from(descendantIdSet.values());
+
+    const [descendantUsers, bonusAgg] = await Promise.all([
+      descendantIds.length
+        ? User.find({ _id: { $in: descendantIds } })
+            .select('name email phone role createdAt lastLoginAt referralCode referralCount')
+            .lean()
+        : [],
+      descendantIds.length
+        ? BonusPayout.aggregate([
+            {
+              $match: {
+                uplineUserId: userId,
+                downlineUserId: { $in: descendantIds },
+              },
+            },
+            {
+              $addFields: {
+                effectiveAt: {
+                  $cond: [
+                    {
+                      $and: [
+                        { $in: ['$status', ['RELEASED', 'REVERSED']] },
+                        { $ifNull: ['$processedAt', false] },
+                      ],
+                    },
+                    '$processedAt',
+                    '$createdAt',
+                  ],
+                },
+              },
+            },
+            ...(from || to
+              ? [
+                  {
+                    $match: {
+                      effectiveAt: {
+                        ...(from ? { $gte: from } : {}),
+                        ...(to ? { $lte: to } : {}),
+                      },
+                    },
+                  },
+                ]
+              : []),
+            {
+              $group: {
+                _id: {
+                  downline: '$downlineUserId',
+                  status: '$status',
+                  level: '$level',
+                },
+                amountPaise: { $sum: '$amountPaise' },
+                count: { $sum: 1 },
+              },
+            },
+          ])
+        : [],
+    ]);
+
+    const userMap = new Map(
+      descendantUsers.map((doc) => [doc._id.toString(), doc]),
+    );
+
+    const earningsByDownline = new Map();
+    bonusAgg.forEach((row) => {
+      const downlineId = row._id?.downline?.toString();
+      const status = typeof row._id?.status === 'string' ? row._id.status.toUpperCase() : null;
+      const level = ensureInt(row._id?.level);
+      if (!downlineId || !status || !level) return;
+      if (!earningsByDownline.has(downlineId)) {
+        earningsByDownline.set(downlineId, {
+          pending: { amountPaise: 0, count: 0 },
+          released: { amountPaise: 0, count: 0 },
+          reversed: { amountPaise: 0, count: 0 },
+          level,
+        });
+      }
+      const record = earningsByDownline.get(downlineId);
+      const amountPaise = ensureNumber(row.amountPaise);
+      const count = ensureInt(row.count);
+      if (status === 'PENDING') {
+        record.pending.amountPaise += amountPaise;
+        record.pending.count += count;
+      } else if (status === 'RELEASED') {
+        record.released.amountPaise += amountPaise;
+        record.released.count += count;
+      } else if (status === 'REVERSED') {
+        record.reversed.amountPaise += amountPaise;
+        record.reversed.count += count;
+      }
+    });
+
+    const levelsResponse = [];
+    for (let lvl = 1; lvl <= depth; lvl += 1) {
+      const ids = levels.get(lvl) || [];
+      const descendants = ids.map((id) => {
+        const key = id.toString();
+        const duser = userMap.get(key);
+        const earnings = earningsByDownline.get(key) || {
+          pending: { amountPaise: 0, count: 0 },
+          released: { amountPaise: 0, count: 0 },
+          reversed: { amountPaise: 0, count: 0 },
+        };
+        const normalizeEarnings = (entry) => ({
+          amountPaise: ensureNumber(entry.amountPaise),
+          amountRupees: toRupees(entry.amountPaise),
+          count: ensureInt(entry.count),
+        });
+        return {
+          id,
+          user: buildUserPublicProfile(duser),
+          earnings: {
+            pending: normalizeEarnings(earnings.pending || {}),
+            released: normalizeEarnings(earnings.released || {}),
+            reversed: normalizeEarnings(earnings.reversed || {}),
+          },
+        };
+      });
+      levelsResponse.push({
+        level: lvl,
+        descendantCount: descendants.length,
+        descendants,
+      });
+    }
+
     return res.json({
       user: buildUserPublicProfile(user),
       login: {
@@ -1760,6 +1897,15 @@ router.get('/users/:userId', async (req, res) => {
       },
       recentPurchases: purchases,
       recentLedger: ledger,
+      referralTree: {
+        timeframe: {
+          from: from ? from.toISOString() : null,
+          to: to ? to.toISOString() : null,
+        },
+        depth,
+        usedClosure,
+        levels: levelsResponse,
+      },
     });
   } catch (err) {
     console.error('admin user detail error', err);
