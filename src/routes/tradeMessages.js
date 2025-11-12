@@ -3,6 +3,7 @@ import { auth, admin } from '../middleware/auth.js';
 import TradeMessage, { TRADE_MESSAGE_CATEGORIES, normalizeTradeMessageCategory } from '../models/TradeMessage.js';
 import TradeMessageHistory from '../models/TradeMessageHistory.js';
 import { sendTextSms } from '../services/sms.js';
+import { formatLocalISO, toEpochMs } from '../utils/time.js';
 
 const router = express.Router();
 
@@ -15,6 +16,8 @@ function serialize(doc, fallbackCategory) {
       target: '',
       stoploss: '',
       updatedAt: null,
+      updatedAtLocal: null,
+      updatedAtMs: null,
       updatedBy: null,
     };
   }
@@ -25,6 +28,8 @@ function serialize(doc, fallbackCategory) {
     target: doc.target || '',
     stoploss: doc.stoploss || '',
     updatedAt: doc.updatedAt || null,
+    updatedAtLocal: doc.updatedAt ? formatLocalISO(doc.updatedAt) : null,
+    updatedAtMs: doc.updatedAt ? toEpochMs(doc.updatedAt) : null,
     updatedBy: doc.updatedBy ? String(doc.updatedBy) : null,
   };
 }
@@ -73,6 +78,8 @@ router.get('/:category/history', async (req, res) => {
         target: e.target || '',
         stoploss: e.stoploss || '',
         updatedAt: e.updatedAt || e.createdAt,
+        updatedAtLocal: (e.updatedAt || e.createdAt) ? formatLocalISO(e.updatedAt || e.createdAt) : null,
+        updatedAtMs: (e.updatedAt || e.createdAt) ? toEpochMs(e.updatedAt || e.createdAt) : null,
         updatedBy: e.updatedBy ? String(e.updatedBy) : null,
       })),
     });
@@ -129,7 +136,7 @@ router.post('/:category', auth, admin, async (req, res) => {
     const payload = serialize(doc, category);
     const io = req.app.get('io');
     if (io) {
-      io.emit('trade-message:update', { category: payload.category, updatedAt: payload.updatedAt });
+      io.emit('trade-message:update', { category: payload.category, updatedAt: payload.updatedAt, updatedAtLocal: payload.updatedAtLocal, updatedAtMs: payload.updatedAtMs });
     }
 
     return res.json({ ok: true, message: payload });

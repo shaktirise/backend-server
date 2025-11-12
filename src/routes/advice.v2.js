@@ -7,6 +7,7 @@ import { ensureWallet } from '../services/wallet.js';
 import Wallet from '../models/Wallet.js';
 import WalletLedger from '../models/WalletLedger.js';
 import { auth, admin } from '../middleware/auth.js';
+import { formatLocalISO, toEpochMs } from '../utils/time.js';
 
 const router = express.Router();
 
@@ -120,7 +121,14 @@ router.get('/', auth, async (req, res) => {
       AdviceV2.countDocuments(filter),
     ]);
 
-    const payload = items.map((a) => ({ id: a._id, category: a.category, createdAt: a.createdAt, price: a.price }));
+    const payload = items.map((a) => ({
+      id: a._id,
+      category: a.category,
+      createdAt: a.createdAt,
+      createdAtLocal: a.createdAt ? formatLocalISO(a.createdAt) : null,
+      createdAtMs: a.createdAt ? toEpochMs(a.createdAt) : null,
+      price: a.price,
+    }));
     return res.json({ ok: true, items: payload, page, limit, total, totalPages: Math.ceil(total / limit) || 1 });
   } catch (e) {
     console.error(e);
@@ -399,6 +407,8 @@ function serializeAdvice(advice) {
     target: advice.target || null,
     stoploss: advice.stoploss || null,
     createdAt: advice.createdAt,
+    createdAtLocal: advice.createdAt ? formatLocalISO(advice.createdAt) : null,
+    createdAtMs: advice.createdAt ? toEpochMs(advice.createdAt) : null,
     price: advice.price,
   };
 }

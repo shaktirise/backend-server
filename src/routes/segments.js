@@ -3,6 +3,7 @@ import SegmentMessage, { SEGMENT_KEYS, normalizeSegmentKey } from '../models/Seg
 import SegmentMessageHistory from '../models/SegmentMessageHistory.js';
 import { auth, admin } from '../middleware/auth.js';
 import { isCloudinaryConfigured, uploadImage } from '../services/cloudinary.js';
+import { formatLocalISO, toEpochMs } from '../utils/time.js';
 
 const router = express.Router();
 
@@ -22,6 +23,8 @@ function serializeSegment(doc, fallbackKey) {
       message: '',
       imageUrl: '',
       updatedAt: null,
+      updatedAtLocal: null,
+      updatedAtMs: null,
       updatedBy: null,
     };
   }
@@ -32,6 +35,8 @@ function serializeSegment(doc, fallbackKey) {
     message: doc.message || '',
     imageUrl: doc.imageUrl || '',
     updatedAt: doc.updatedAt || null,
+    updatedAtLocal: doc.updatedAt ? formatLocalISO(doc.updatedAt) : null,
+    updatedAtMs: doc.updatedAt ? toEpochMs(doc.updatedAt) : null,
     updatedBy: doc.updatedBy ? String(doc.updatedBy) : null,
   };
 }
@@ -66,6 +71,8 @@ router.get('/:segment/history', async (req, res) => {
         message: entry.message,
         updatedBy: entry.updatedBy ? String(entry.updatedBy) : null,
         updatedAt: entry.updatedAt || entry.createdAt,
+        updatedAtLocal: (entry.updatedAt || entry.createdAt) ? formatLocalISO(entry.updatedAt || entry.createdAt) : null,
+        updatedAtMs: (entry.updatedAt || entry.createdAt) ? toEpochMs(entry.updatedAt || entry.createdAt) : null,
       })),
     });
   } catch (err) {
@@ -142,6 +149,8 @@ router.post('/:segment', auth, admin, async (req, res) => {
         segment: response.key,
         message: response.message,
         updatedAt: response.updatedAt,
+        updatedAtLocal: response.updatedAtLocal,
+        updatedAtMs: response.updatedAtMs,
       });
     }
 
