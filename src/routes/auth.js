@@ -649,6 +649,7 @@ router.get('/referrals', auth, async (req, res) => {
         .select('_id name email referralCode referralActivatedAt createdAt loginCount'),
       User.find({ pendingReferredBy: req.user.id })
         .sort({ createdAt: -1 })
+        .skip(offset)
         .limit(limit)
         .select('_id name email phone referralCode createdAt'),
       User.countDocuments({ referredBy: req.user.id }),
@@ -1057,6 +1058,44 @@ router.get('/referrals/pending', auth, async (req, res) => {
     });
   } catch (err) {
     console.error('pending referrals error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Backward-compatible aliases for UI expecting 'non-paid' or 'nonpaid'
+router.get(['/referrals/non-paid', '/referrals/nonpaid'], auth, async (req, res) => {
+  try {
+    const limitRaw = parseInt(req.query?.limit ?? '50', 10);
+    const offsetRaw = parseInt(req.query?.offset ?? '0', 10);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 50;
+    const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? offsetRaw : 0;
+
+    const [items, total] = await Promise.all([
+      User.find({ pendingReferredBy: req.user.id })
+        .sort({ createdAt: -1 })
+        .skip(offset)
+        .limit(limit)
+        .select('_id name email phone referralCode createdAt')
+        .lean(),
+      User.countDocuments({ pendingReferredBy: req.user.id }),
+    ]);
+
+    return res.json({
+      total,
+      offset,
+      limit,
+      items: items.map((u) => ({
+        id: u._id,
+        name: u.name || null,
+        phone: u.phone || null,
+        email: u.email || null,
+        referralCode: u.referralCode || null,
+        referralShareLink: buildReferralShareLink(u.referralCode),
+        createdAt: u.createdAt,
+      })),
+    });
+  } catch (err) {
+    console.error('non-paid referrals error', err);
     return res.status(500).json({ error: 'server error' });
   }
 });
