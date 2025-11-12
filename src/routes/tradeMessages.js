@@ -1,5 +1,6 @@
 import express from 'express';
 import { auth, admin } from '../middleware/auth.js';
+import { requireActiveMembership } from '../middleware/membership.js';
 import TradeMessage, { TRADE_MESSAGE_CATEGORIES, normalizeTradeMessageCategory } from '../models/TradeMessage.js';
 import TradeMessageHistory from '../models/TradeMessageHistory.js';
 import { sendTextSms } from '../services/sms.js';
@@ -34,13 +35,14 @@ function serialize(doc, fallbackCategory) {
   };
 }
 
-router.get('/', async (req, res) => {
+router.get('/', auth, requireActiveMembership, async (req, res) => {
   try {
     const items = await TradeMessage.find({ category: { $in: TRADE_MESSAGE_CATEGORIES } }).lean();
     const byCat = new Map(items.map((i) => [i.category, i]));
     return res.json({
       categories: TRADE_MESSAGE_CATEGORIES,
       items: TRADE_MESSAGE_CATEGORIES.map((cat) => serialize(byCat.get(cat), cat)),
+      membership: req.membership,
     });
   } catch (err) {
     console.error('trade-messages list error', err);
@@ -48,19 +50,20 @@ router.get('/', async (req, res) => {
   }
 });
 
-router.get('/:category', async (req, res) => {
+router.get('/:category', auth, requireActiveMembership, async (req, res) => {
   try {
     const category = normalizeTradeMessageCategory(req.params.category);
     if (!category) return res.status(404).json({ error: 'category not found' });
     const doc = await TradeMessage.findOne({ category }).lean();
-    return res.json(serialize(doc, category));
+    const payload = serialize(doc, category);
+    return res.json({ ...payload, membership: req.membership });
   } catch (err) {
     console.error('trade-messages get error', err);
     return res.status(500).json({ error: 'server error' });
   }
 });
 
-router.get('/:category/history', async (req, res) => {
+router.get('/:category/history', auth, requireActiveMembership, async (req, res) => {
   try {
     const category = normalizeTradeMessageCategory(req.params.category);
     if (!category) return res.status(404).json({ error: 'category not found' });
@@ -82,6 +85,7 @@ router.get('/:category/history', async (req, res) => {
         updatedAtMs: (e.updatedAt || e.createdAt) ? toEpochMs(e.updatedAt || e.createdAt) : null,
         updatedBy: e.updatedBy ? String(e.updatedBy) : null,
       })),
+      membership: req.membership,
     });
   } catch (err) {
     console.error('trade-messages history error', err);

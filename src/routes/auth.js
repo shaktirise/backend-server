@@ -8,6 +8,8 @@ import User from '../models/User.js';
 import ReferralLedger from '../models/ReferralLedger.js';
 import ReferralWithdrawalRequest from '../models/ReferralWithdrawalRequest.js';
 import { auth, admin } from '../middleware/auth.js';
+import { formatLocalISO, toEpochMs } from '../utils/time.js';
+import { backfillUserMembership } from '../services/membership.js';
 import {
   ensureReferralCode,
   normalizeReferralCodeInput,
@@ -112,13 +114,40 @@ function buildUserPayload(user) {
     walletBalance: user.walletBalance,
     accountStatus: user.accountStatus,
     accountActiveUntil: user.accountActiveUntil || null,
+    accountActiveUntilLocal: user.accountActiveUntil ? formatLocalISO(user.accountActiveUntil) : null,
+    accountActiveUntilMs: user.accountActiveUntil ? toEpochMs(user.accountActiveUntil) : null,
     referralCode: user.referralCode,
     referralShareLink: buildReferralShareLink(user.referralCode),
     referralCount: user.referralCount || 0,
     referralActivatedAt: user.referralActivatedAt || null,
+    referralActivatedAtLocal: user.referralActivatedAt ? formatLocalISO(user.referralActivatedAt) : null,
+    referralActivatedAtMs: user.referralActivatedAt ? toEpochMs(user.referralActivatedAt) : null,
     referredBy: user.referredBy ? user.referredBy.toString() : null,
     pendingReferredBy: user.pendingReferredBy ? user.pendingReferredBy.toString() : null,
     lastLoginAt: user.lastLoginAt || null,
+  };
+}
+
+function buildMembershipPayload(user) {
+  const now = Date.now();
+  const activatedAt = user.accountActivatedAt || null;
+  const activeUntil = user.accountActiveUntil || null;
+  const untilMs = activeUntil ? activeUntil.getTime() : 0;
+  const remainingMs = Math.max(0, untilMs - now);
+  const isActive = untilMs > now;
+  return {
+    status: user.accountStatus || 'INACTIVE',
+    isActive,
+    nowMs: now,
+    activatedAt,
+    activatedAtLocal: activatedAt ? formatLocalISO(activatedAt) : null,
+    activatedAtMs: activatedAt ? toEpochMs(activatedAt) : null,
+    activeUntil,
+    activeUntilLocal: activeUntil ? formatLocalISO(activeUntil) : null,
+    activeUntilMs: activeUntil ? untilMs : null,
+    remainingMs,
+    remainingSeconds: Math.floor(remainingMs / 1000),
+    remainingDays: activeUntil ? Math.ceil(remainingMs / (24 * 60 * 60 * 1000)) : 0,
   };
 }
 
@@ -265,6 +294,7 @@ router.post('/signup', requestLimiter, async (req, res) => {
       refreshToken: tokens.refreshToken,
       refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
       user: buildUserPayload(user),
+      membership: buildMembershipPayload(user),
     });
   } catch (err) {
     console.error('signup error', err);
@@ -298,6 +328,7 @@ router.post('/login', requestLimiter, async (req, res) => {
       refreshToken: tokens.refreshToken,
       refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
       user: buildUserPayload(user),
+      membership: buildMembershipPayload(user),
     });
   } catch (err) {
     console.error('login error', err);
@@ -551,11 +582,13 @@ router.get('/me', auth, async (req, res) => {
 
     const hadCode = Boolean(user.referralCode);
     await ensureReferralCode(user);
-    if (!hadCode && user.referralCode) {
+    let changed = false;
+    if (syncAccountStatus(user)) changed = true;
+    if ((!hadCode && user.referralCode) || changed) {
       await user.save();
     }
 
-    return res.json({ user: buildUserPayload(user) });
+    return res.json({ user: buildUserPayload(user), membership: buildMembershipPayload(user) });
   } catch (err) {
     console.error('me error', err);
     return res.status(500).json({ error: 'server error' });
@@ -594,7 +627,7 @@ router.put('/me', auth, async (req, res) => {
     await ensureReferralCode(user);
     await user.save();
 
-    return res.json({ user: buildUserPayload(user) });
+    return res.json({ user: buildUserPayload(user), membership: buildMembershipPayload(user) });
   } catch (err) {
     console.error('update me error', err);
     return res.status(500).json({ error: 'server error' });
@@ -976,10 +1009,12 @@ router.get('/admin/me', auth, admin, async (req, res) => {
     if (!user) return res.status(404).json({ error: 'not found' });
     const hadCode = Boolean(user.referralCode);
     await ensureReferralCode(user);
-    if (!hadCode && user.referralCode) {
+    let changed = false;
+    if (syncAccountStatus(user)) changed = true;
+    if ((!hadCode && user.referralCode) || changed) {
       await user.save();
     }
-    return res.json({ user: buildUserPayload(user) });
+    return res.json({ user: buildUserPayload(user), membership: buildMembershipPayload(user) });
   } catch (err) {
     console.error('admin me error', err);
     return res.status(500).json({ error: 'server error' });
@@ -987,3 +1022,22 @@ router.get('/admin/me', auth, admin, async (req, res) => {
 });
 
 export default router;
+
+// Backfill membership for the current user based on historical activation/top-up events.
+// POST /api/auth/membership/backfill { dryRun?: boolean }
+router.post('/membership/backfill', auth, async (req, res) => {
+  try {
+    const dryRun = req.body?.dryRun === true || String(req.query?.dryRun || req.query?.dry || '').toLowerCase() === 'true';
+    const result = await backfillUserMembership(req.user.id, { save: !dryRun });
+    const user = await User.findById(req.user.id);
+    return res.json({
+      ok: true,
+      dryRun: !!dryRun,
+      updated: result.updated && !dryRun,
+      membership: buildMembershipPayload(user),
+    });
+  } catch (err) {
+    console.error('membership backfill error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});

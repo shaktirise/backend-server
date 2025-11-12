@@ -2,6 +2,7 @@ import express from 'express';
 import SegmentMessage, { SEGMENT_KEYS, normalizeSegmentKey } from '../models/SegmentMessage.js';
 import SegmentMessageHistory from '../models/SegmentMessageHistory.js';
 import { auth, admin } from '../middleware/auth.js';
+import { requireActiveMembership } from '../middleware/membership.js';
 import { isCloudinaryConfigured, uploadImage } from '../services/cloudinary.js';
 import { formatLocalISO, toEpochMs } from '../utils/time.js';
 
@@ -41,19 +42,19 @@ function serializeSegment(doc, fallbackKey) {
   };
 }
 
-router.get('/', async (req, res) => {
+router.get('/', auth, requireActiveMembership, async (req, res) => {
   try {
     const messages = await SegmentMessage.find({ segment: { $in: SEGMENT_KEYS } }).lean();
     const messageMap = new Map(messages.map((item) => [item.segment, item]));
     const segments = SEGMENT_KEYS.map((key) => serializeSegment(messageMap.get(key), key));
-    return res.json({ segments });
+    return res.json({ segments, membership: req.membership });
   } catch (err) {
     console.error('Failed to fetch segment messages', err);
     return res.status(500).json({ error: 'server error' });
   }
 });
 
-router.get('/:segment/history', async (req, res) => {
+router.get('/:segment/history', auth, requireActiveMembership, async (req, res) => {
   try {
     const key = normalizeSegmentKey(req.params.segment);
     if (!key) return res.status(404).json({ error: 'segment not found' });
@@ -74,6 +75,7 @@ router.get('/:segment/history', async (req, res) => {
         updatedAtLocal: (entry.updatedAt || entry.createdAt) ? formatLocalISO(entry.updatedAt || entry.createdAt) : null,
         updatedAtMs: (entry.updatedAt || entry.createdAt) ? toEpochMs(entry.updatedAt || entry.createdAt) : null,
       })),
+      membership: req.membership,
     });
   } catch (err) {
     console.error('Failed to fetch segment history', err);
@@ -81,12 +83,13 @@ router.get('/:segment/history', async (req, res) => {
   }
 });
 
-router.get('/:segment', async (req, res) => {
+router.get('/:segment', auth, requireActiveMembership, async (req, res) => {
   try {
     const key = normalizeSegmentKey(req.params.segment);
     if (!key) return res.status(404).json({ error: 'segment not found' });
     const message = await SegmentMessage.findOne({ segment: key }).lean();
-    return res.json(serializeSegment(message, key));
+    const payload = serializeSegment(message, key);
+    return res.json({ ...payload, membership: req.membership });
   } catch (err) {
     console.error('Failed to fetch segment message', err);
     return res.status(500).json({ error: 'server error' });

@@ -8,6 +8,7 @@ import User from '../models/User.js';
 import WalletLedger from '../models/WalletLedger.js';
 import { WALLET_LEDGER_TYPES } from '../constants/walletLedger.js';
 import { ensureWallet } from '../services/wallet.js';
+import { formatLocalISO, toEpochMs } from '../utils/time.js';
 import { handleReferralTopupPayout, getReferralConfig } from '../services/referral.js';
 import Purchase from '../models/Purchase.js';
 import WalletWithdrawalRequest from '../models/WalletWithdrawalRequest.js';
@@ -393,10 +394,53 @@ router.post('/topups/verify', async (req, res) => {
       session.endSession();
     }
 
+    // Fetch latest user activation snapshot to allow client to update UI immediately
+    const latestUser = await User.findById(req.user.sub)
+      .select('accountStatus accountActivatedAt accountActiveUntil')
+      .lean();
+
+    const activation = latestUser
+      ? {
+          accountStatus: latestUser.accountStatus || null,
+          accountActivatedAt: latestUser.accountActivatedAt || null,
+          accountActivatedAtLocal: latestUser.accountActivatedAt
+            ? formatLocalISO(latestUser.accountActivatedAt)
+            : null,
+          accountActivatedAtMs: latestUser.accountActivatedAt
+            ? toEpochMs(latestUser.accountActivatedAt)
+            : null,
+          accountActiveUntil: latestUser.accountActiveUntil || null,
+          accountActiveUntilLocal: latestUser.accountActiveUntil
+            ? formatLocalISO(latestUser.accountActiveUntil)
+            : null,
+          accountActiveUntilMs: latestUser.accountActiveUntil
+            ? toEpochMs(latestUser.accountActiveUntil)
+            : null,
+        }
+      : null;
+
+    const now = Date.now();
+    const untilMs = latestUser?.accountActiveUntil ? new Date(latestUser.accountActiveUntil).getTime() : 0;
+    const remainingMs = Math.max(0, untilMs - now);
+    const membership = latestUser
+      ? {
+          status: latestUser.accountStatus || 'INACTIVE',
+          isActive: untilMs > now,
+          nowMs: now,
+          activeUntilMs: untilMs || null,
+          activeUntilLocal: untilMs ? formatLocalISO(latestUser.accountActiveUntil) : null,
+          remainingMs,
+          remainingSeconds: Math.floor(remainingMs / 1000),
+          remainingDays: untilMs ? Math.ceil(remainingMs / (24 * 60 * 60 * 1000)) : 0,
+        }
+      : null;
+
     return res.json({
       ok: true,
       creditedPaise: creditAmount,
       referral: referralResult,
+      activation,
+      membership,
     });
   } catch (e) {
     console.error('topups/verify error', e);
