@@ -650,7 +650,7 @@ router.get('/referrals', auth, async (req, res) => {
       User.find({ pendingReferredBy: req.user.id })
         .sort({ createdAt: -1 })
         .limit(limit)
-        .select('_id name email referralCode createdAt'),
+        .select('_id name email phone referralCode createdAt'),
       User.countDocuments({ referredBy: req.user.id }),
       User.countDocuments({ pendingReferredBy: req.user.id }),
     ]);
@@ -674,6 +674,7 @@ router.get('/referrals', auth, async (req, res) => {
         id: ref._id,
         name: ref.name,
         email: ref.email,
+        phone: ref.phone || null,
         referralCode: ref.referralCode,
         referralShareLink: buildReferralShareLink(ref.referralCode),
         createdAt: ref.createdAt,
@@ -1021,7 +1022,85 @@ router.get('/admin/me', auth, admin, async (req, res) => {
   }
 });
 
-export default router;
+// Pending (non-activated) referrals: users who signed up with your code but haven't paid the ₹2100 activation
+// GET /api/auth/referrals/pending?limit=50&offset=0
+router.get('/referrals/pending', auth, async (req, res) => {
+  try {
+    const limitRaw = parseInt(req.query?.limit ?? '50', 10);
+    const offsetRaw = parseInt(req.query?.offset ?? '0', 10);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 50;
+    const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? offsetRaw : 0;
+
+    const [items, total] = await Promise.all([
+      User.find({ pendingReferredBy: req.user.id })
+        .sort({ createdAt: -1 })
+        .skip(offset)
+        .limit(limit)
+        .select('_id name email phone referralCode createdAt')
+        .lean(),
+      User.countDocuments({ pendingReferredBy: req.user.id }),
+    ]);
+
+    return res.json({
+      total,
+      offset,
+      limit,
+      items: items.map((u) => ({
+        id: u._id,
+        name: u.name || null,
+        phone: u.phone || null,
+        email: u.email || null,
+        referralCode: u.referralCode || null,
+        referralShareLink: buildReferralShareLink(u.referralCode),
+        createdAt: u.createdAt,
+      })),
+    });
+  } catch (err) {
+    console.error('pending referrals error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Active referrals (activated by paying the registration amount)
+// GET /api/auth/referrals/active?limit=50&offset=0
+router.get('/referrals/active', auth, async (req, res) => {
+  try {
+    const limitRaw = parseInt(req.query?.limit ?? '50', 10);
+    const offsetRaw = parseInt(req.query?.offset ?? '0', 10);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 50;
+    const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? offsetRaw : 0;
+
+    const [items, total] = await Promise.all([
+      User.find({ referredBy: req.user.id })
+        .sort({ createdAt: -1 })
+        .skip(offset)
+        .limit(limit)
+        .select('_id name email phone referralCode referralActivatedAt createdAt loginCount')
+        .lean(),
+      User.countDocuments({ referredBy: req.user.id }),
+    ]);
+
+    return res.json({
+      total,
+      offset,
+      limit,
+      items: items.map((u) => ({
+        id: u._id,
+        name: u.name || null,
+        phone: u.phone || null,
+        email: u.email || null,
+        referralCode: u.referralCode || null,
+        referralShareLink: buildReferralShareLink(u.referralCode),
+        createdAt: u.createdAt,
+        referralActivatedAt: u.referralActivatedAt || null,
+        loginCount: u.loginCount || 0,
+      })),
+    });
+  } catch (err) {
+    console.error('active referrals error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
 
 // Backfill membership for the current user based on historical activation/top-up events.
 // POST /api/auth/membership/backfill { dryRun?: boolean }
@@ -1041,3 +1120,5 @@ router.post('/membership/backfill', auth, async (req, res) => {
     return res.status(500).json({ error: 'server error' });
   }
 });
+
+export default router;
