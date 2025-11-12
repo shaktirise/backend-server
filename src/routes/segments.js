@@ -65,7 +65,7 @@ router.get('/:segment/history', async (req, res) => {
         id: entry._id,
         message: entry.message,
         updatedBy: entry.updatedBy ? String(entry.updatedBy) : null,
-        createdAt: entry.createdAt,
+        updatedAt: entry.updatedAt || entry.createdAt,
       })),
     });
   } catch (err) {

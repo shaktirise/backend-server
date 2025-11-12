@@ -72,7 +72,7 @@ router.get('/:category/history', async (req, res) => {
         buy: e.buy || '',
         target: e.target || '',
         stoploss: e.stoploss || '',
-        updatedAt: e.createdAt,
+        updatedAt: e.updatedAt || e.createdAt,
         updatedBy: e.updatedBy ? String(e.updatedBy) : null,
       })),
     });

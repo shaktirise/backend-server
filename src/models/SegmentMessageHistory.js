@@ -6,7 +6,7 @@ const SegmentMessageHistorySchema = new mongoose.Schema(
     message: { type: String, required: true, trim: true, maxlength: 1000 },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
-  { timestamps: { createdAt: true, updatedAt: false } }
+  { timestamps: true }
 );
 
 SegmentMessageHistorySchema.index({ segment: 1, createdAt: -1 });
