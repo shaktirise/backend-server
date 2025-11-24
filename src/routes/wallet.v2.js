@@ -810,6 +810,102 @@ router.get('/withdrawals/all', admin, async (req, res) => {
   }
 });
 
+// Admin: export all withdrawal requests as CSV (auto-fresh on each call)
+router.get('/withdrawals/export.csv', admin, async (req, res) => {
+  try {
+    const query = {};
+    const status = (req.query?.status || '').toString().trim();
+    if (status) {
+      const allowed = new Set(['pending', 'paid', 'cancelled']);
+      if (!allowed.has(status)) {
+        return res.status(400).json({ error: 'invalid_status' });
+      }
+      query.status = status;
+    }
+
+    const userIdRaw = (req.query?.userId || '').toString().trim();
+    if (userIdRaw && mongoose.Types.ObjectId.isValid(userIdRaw)) {
+      query.userId = userIdRaw;
+    }
+
+    const requests = await WalletWithdrawalRequest.find(query)
+      .sort({ createdAt: -1 })
+      .populate('userId', 'name email phone role')
+      .populate('processedBy', 'name email phone role')
+      .lean();
+
+    const header = [
+      'id',
+      'userName',
+      'userEmail',
+      'userPhone',
+      'amountPaise',
+      'amountRupees',
+      'method',
+      'upiId',
+      'bankAccountName',
+      'bankAccountNumber',
+      'bankIfsc',
+      'bankName',
+      'contactName',
+      'contactMobile',
+      'note',
+      'status',
+      'paymentRef',
+      'createdAt',
+      'processedAt',
+      'processedByName',
+    ];
+
+    const rows = [header];
+    const toCsvValue = (v) => {
+      if (v === null || v === undefined) return '';
+      const str = String(v);
+      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    requests.forEach((doc) => {
+      const user = doc.userId || {};
+      const processedBy = doc.processedBy || {};
+      const row = [
+        doc._id,
+        user.name || '',
+        user.email || '',
+        user.phone || '',
+        doc.amountPaise || 0,
+        Math.floor((doc.amountPaise || 0) / 100),
+        doc.method || '',
+        doc.upiId || '',
+        doc.bankAccountName || '',
+        doc.bankAccountNumber || '',
+        doc.bankIfsc || '',
+        doc.bankName || '',
+        doc.contactName || '',
+        doc.contactMobile || '',
+        doc.note || '',
+        doc.status || '',
+        doc.paymentRef || '',
+        doc.createdAt ? new Date(doc.createdAt).toISOString() : '',
+        doc.processedAt ? new Date(doc.processedAt).toISOString() : '',
+        processedBy.name || (processedBy._id ? String(processedBy._id) : ''),
+      ];
+      rows.push(row.map(toCsvValue).join(','));
+    });
+
+    const csv = rows.map((r) => (Array.isArray(r) ? r.join(',') : r)).join('\n');
+    const filename = `wallet_withdrawals_${new Date().toISOString().slice(0, 10)}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return res.status(200).send(csv);
+  } catch (e) {
+    console.error('withdrawals export csv error', e);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
 // Admin: mark a withdrawal as paid and debit wallet
 // PATCH /api/wallet/withdrawals/:id/mark-paid
 // Body: { paymentRef?: string }
