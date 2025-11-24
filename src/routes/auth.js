@@ -10,6 +10,7 @@ import ReferralWithdrawalRequest from '../models/ReferralWithdrawalRequest.js';
 import { auth, admin } from '../middleware/auth.js';
 import { formatLocalISO, toEpochMs } from '../utils/time.js';
 import { backfillUserMembership } from '../services/membership.js';
+import { sendResetPasswordEmail } from '../services/email.js';
 import {
   ensureReferralCode,
   normalizeReferralCodeInput,
@@ -45,8 +46,8 @@ const REFRESH_TOKEN_BCRYPT_ROUNDS = parseInt(
 
 // Password reset config
 const RESET_TOKEN_TTL_MIN = parseInt(process.env.RESET_TOKEN_TTL_MIN || '15', 10);
-const EXPOSE_RESET_TOKEN =
-  (process.env.EXPOSE_RESET_TOKEN === '1') || (process.env.NODE_ENV !== 'production');
+const EXPOSE_RESET_TOKEN = process.env.EXPOSE_RESET_TOKEN === '1';
+const RESET_OTP_LENGTH = 6;
 
 function isValidName(name) {
   return typeof name === 'string' && name.trim().length >= 2 && name.trim().length <= 100;
@@ -58,6 +59,20 @@ function isValidEmail(email) {
 
 function isValidPassword(password) {
   return typeof password === 'string' && password.length >= 8 && password.length <= 128;
+}
+
+function generateNumericCode(length = 6) {
+  const digits = [];
+  for (let i = 0; i < length; i += 1) {
+    digits.push(Math.floor(Math.random() * 10));
+  }
+  return digits.join('');
+}
+
+function normalizeOtp(input) {
+  if (typeof input !== 'string' && typeof input !== 'number') return null;
+  const digits = String(input).replace(/\D/g, '');
+  return digits || null;
 }
 
 // Normalize mobile numbers to E.164 format.
@@ -346,18 +361,25 @@ router.post('/forgot-password', requestLimiter, async (req, res) => {
 
     // Always respond 200 to avoid user enumeration
     const user = await User.findOne({ email });
-    let resetTokenToExpose = null;
+    let resetOtpToExpose = null;
     if (user && user.passwordHash) {
-      const raw = crypto.randomBytes(24).toString('hex');
-      const hash = await bcrypt.hash(raw, REFRESH_TOKEN_BCRYPT_ROUNDS);
-      user.resetPasswordTokenHash = hash;
-      user.resetPasswordExpiresAt = new Date(Date.now() + Math.max(1, RESET_TOKEN_TTL_MIN) * 60 * 1000);
+      const code = generateNumericCode(RESET_OTP_LENGTH);
+      const hash = await bcrypt.hash(code, REFRESH_TOKEN_BCRYPT_ROUNDS);
+      user.resetPasswordOtpHash = hash;
+      user.resetPasswordOtpExpiresAt = new Date(Date.now() + Math.max(1, RESET_TOKEN_TTL_MIN) * 60 * 1000);
       await user.save();
-      if (EXPOSE_RESET_TOKEN) resetTokenToExpose = raw;
-      // In production, you should email/SMS the token or a link containing it.
+      try {
+        const sendResult = await sendResetPasswordEmail(email, code, RESET_TOKEN_TTL_MIN);
+        if (!sendResult.ok) {
+          console.warn('[reset-password] OTP email not sent (simulated or failed)');
+        }
+      } catch (sendErr) {
+        console.error('reset-password email send error', sendErr);
+      }
+      if (EXPOSE_RESET_TOKEN) resetOtpToExpose = code;
     }
 
-    return res.json({ ok: true, ...(resetTokenToExpose ? { resetToken: resetTokenToExpose } : {}) });
+    return res.json({ ok: true, ...(resetOtpToExpose ? { resetCode: resetOtpToExpose } : {}) });
   } catch (err) {
     console.error('forgot-password error', err);
     return res.status(500).json({ error: 'server error' });
@@ -368,7 +390,8 @@ router.post('/forgot-password', requestLimiter, async (req, res) => {
 router.post('/reset-password', requestLimiter, async (req, res) => {
   try {
     const email = String(req.body?.email || '').trim().toLowerCase();
-    const token = String(req.body?.token || '').trim();
+    const codeRaw = req.body?.code ?? req.body?.otp ?? req.body?.token;
+    const code = normalizeOtp(codeRaw);
     const password = String(req.body?.password || '');
     const confirmPassword =
       req.body?.confirmPassword ?? req.body?.confirmPass ?? req.body?.confirmpass;
@@ -376,8 +399,8 @@ router.post('/reset-password', requestLimiter, async (req, res) => {
     if (!isValidEmail(email)) {
       return res.status(400).json({ error: 'valid email required' });
     }
-    if (!token) {
-      return res.status(400).json({ error: 'token required' });
+    if (!code) {
+      return res.status(400).json({ error: 'code required' });
     }
     if (!isValidPassword(password)) {
       return res.status(400).json({ error: 'password must be 8-128 chars' });
@@ -387,23 +410,23 @@ router.post('/reset-password', requestLimiter, async (req, res) => {
     }
 
     const user = await User.findOne({ email });
-    if (!user || !user.resetPasswordTokenHash || !user.resetPasswordExpiresAt) {
+    if (!user || !user.resetPasswordOtpHash || !user.resetPasswordOtpExpiresAt) {
       return res.status(400).json({ error: 'invalid_or_expired_token' });
     }
 
-    if (user.resetPasswordExpiresAt.getTime() < Date.now()) {
+    if (user.resetPasswordOtpExpiresAt.getTime() < Date.now()) {
       return res.status(400).json({ error: 'invalid_or_expired_token' });
     }
 
-    const ok = await bcrypt.compare(token, user.resetPasswordTokenHash);
+    const ok = await bcrypt.compare(code, user.resetPasswordOtpHash);
     if (!ok) {
       return res.status(400).json({ error: 'invalid_or_expired_token' });
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
     user.passwordHash = passwordHash;
-    user.resetPasswordTokenHash = undefined;
-    user.resetPasswordExpiresAt = undefined;
+    user.resetPasswordOtpHash = undefined;
+    user.resetPasswordOtpExpiresAt = undefined;
     // Invalidate any existing refresh token on password reset
     user.refreshTokenHash = undefined;
     user.refreshTokenExpiresAt = undefined;
