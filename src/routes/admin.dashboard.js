@@ -1450,7 +1450,8 @@ router.get('/referrals/withdrawals', async (req, res) => {
 router.get('/referrals/withdrawals/export.csv', async (req, res) => {
   try {
     const query = {};
-    const statusRaw = typeof req.query.status === 'string' ? req.query.status.trim().toLowerCase() : 'pending';
+    // Default: include all statuses. Use ?status=pending|paid|cancelled to filter; status=all or empty means no filter.
+    const statusRaw = typeof req.query.status === 'string' ? req.query.status.trim().toLowerCase() : '';
     if (statusRaw && statusRaw !== 'all') {
       const allowed = new Set(['pending', 'paid', 'cancelled']);
       if (!allowed.has(statusRaw)) {
