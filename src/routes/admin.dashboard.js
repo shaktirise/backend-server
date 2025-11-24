@@ -1495,13 +1495,21 @@ router.get('/referrals/withdrawals/export.csv', async (req, res) => {
     ];
     rows.push(header);
 
-    function toCsvValue(v) {
-      if (v === null || v === undefined) return '';
+    const asTextCell = (v) => {
+      if (v === null || v === undefined || v === '') return '';
       const str = String(v);
-      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-        return '"' + str.replace(/"/g, '""') + '"';
-      }
+      // Force Excel/Sheets to keep digits intact (no scientific notation/rounding)
+      if (/^\d+$/.test(str)) return `="${str}"`;
       return str;
+    };
+
+    function toCsvValue(v, { forceText = false } = {}) {
+      if (v === null || v === undefined) return '';
+      const raw = forceText ? asTextCell(v) : String(v);
+      if (raw.includes(',') || raw.includes('"') || raw.includes('\n')) {
+        return `"${raw.replace(/"/g, '""')}"`;
+      }
+      return raw;
     }
 
     requests.forEach((doc) => {
@@ -1511,17 +1519,17 @@ router.get('/referrals/withdrawals/export.csv', async (req, res) => {
         doc._id,
         user.name || '',
         user.email || '',
-        user.phone || '',
+        toCsvValue(user.phone || '', { forceText: true }),
         doc.amountPaise || 0,
         Math.floor((doc.amountPaise || 0) / 100),
         doc.method || '',
         doc.upiId || '',
         doc.bankAccountName || '',
-        doc.bankAccountNumber || '',
+        toCsvValue(doc.bankAccountNumber || '', { forceText: true }),
         doc.bankIfsc || '',
         doc.bankName || '',
         doc.contactName || '',
-        doc.contactMobile || '',
+        toCsvValue(doc.contactMobile || '', { forceText: true }),
         doc.status || '',
         doc.paymentRef || '',
         doc.adminNote || '',
@@ -1529,7 +1537,8 @@ router.get('/referrals/withdrawals/export.csv', async (req, res) => {
         doc.processedAt ? new Date(doc.processedAt).toISOString() : '',
         processedBy.name || (processedBy._id ? String(processedBy._id) : ''),
       ];
-      rows.push(row.map(toCsvValue).join(','));
+      // row already has escaped text cells; apply base CSV escaping
+      rows.push(row.map((cell) => toCsvValue(cell, { forceText: false })).join(','));
     });
 
     const csv = rows.map((r) => (Array.isArray(r) ? r.join(',') : r)).join('\n');
