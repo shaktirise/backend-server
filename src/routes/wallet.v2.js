@@ -814,8 +814,9 @@ router.get('/withdrawals/all', admin, async (req, res) => {
 router.get('/withdrawals/export.csv', admin, async (req, res) => {
   try {
     const query = {};
-    const status = (req.query?.status || '').toString().trim();
-    if (status) {
+    // Default to pending if no status provided; allow 'all' to disable filter.
+    const status = (req.query?.status || 'pending').toString().trim().toLowerCase();
+    if (status && status !== 'all') {
       const allowed = new Set(['pending', 'paid', 'cancelled']);
       if (!allowed.has(status)) {
         return res.status(400).json({ error: 'invalid_status' });
