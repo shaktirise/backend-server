@@ -393,10 +393,10 @@ router.post('/forgot-password', requestLimiter, async (req, res) => {
       } catch (sendErr) {
         console.error('reset-password email send error', sendErr);
       }
-      if (EXPOSE_RESET_TOKEN) resetOtpToExpose = code;
+     
     }
 
-    return res.json({ ok: true, ...(resetOtpToExpose ? { resetCode: resetOtpToExpose } : {}) });
+    return res.json({ ok: true });
   } catch (err) {
     console.error('forgot-password error', err);
     return res.status(500).json({ error: 'server error' });
