@@ -31,8 +31,8 @@ async function sendOtpEmail(to, code) {
 
 function buildOtpEmail(code) {
   return {
-    subject: ` Your verification code`,
-    text: `Your verification code is: ${code}`
+    subject: ` Your Password reset Otp code for Juststock `,
+    text: `Your otp code is: ${code}`
   };
 }
 

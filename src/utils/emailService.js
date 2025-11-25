@@ -10,7 +10,7 @@ export const sendEmail = async (to, subject, text) => {
   });
 
   await transporter.sendMail({
-    from: `"MLM Verification"${process.env.EMAIL_USER}`,
+    from: `"Juststock"${process.env.EMAIL_USER}`,
     to,
     subject,
     text,
