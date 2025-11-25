@@ -17,10 +17,17 @@ import {
   buildReferralShareLink,
   getReferralConfig,
 } from '../services/referral.js';
+import {sendEmail} from "../utils/emailService.js";
 
 const router = express.Router();
 
 const requestLimiter = rateLimit({ windowMs: 60 * 1000, max: 15 });
+
+// Auth token config
+async function sendOtpEmail(to, code) {
+  const { subject, text } = buildOtpEmail(code);
+  await sendEmail(to, subject, text);
+}
 
 const ACCESS_TOKEN_TTL_SEC_RAW = Number.parseInt(
   process.env.ACCESS_TOKEN_TTL_SEC ?? '0',
@@ -369,7 +376,10 @@ router.post('/forgot-password', requestLimiter, async (req, res) => {
       user.resetPasswordOtpExpiresAt = new Date(Date.now() + Math.max(1, RESET_TOKEN_TTL_MIN) * 60 * 1000);
       await user.save();
       try {
-        const sendResult = await sendResetPasswordEmail(email, code, RESET_TOKEN_TTL_MIN);
+
+        // const sendResult = await sendResetPasswordEmail(email, code, RESET_TOKEN_TTL_MIN);
+        const sendResult = await sendOtpEmail(email, code);
+        
         if (!sendResult.ok) {
           console.warn('[reset-password] OTP email not sent (simulated or failed)');
         }
