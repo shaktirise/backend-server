@@ -29,6 +29,13 @@ async function sendOtpEmail(to, code) {
   await sendEmail(to, subject, text);
 }
 
+function buildOtpEmail(code) {
+  return {
+    subject: ` Your verification code`,
+    text: `Your verification code is: ${code}`
+  };
+}
+
 const ACCESS_TOKEN_TTL_SEC_RAW = Number.parseInt(
   process.env.ACCESS_TOKEN_TTL_SEC ?? '0',
   10,
