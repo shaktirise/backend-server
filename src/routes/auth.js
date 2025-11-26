@@ -7,6 +7,7 @@ import mongoose from 'mongoose';
 import User from '../models/User.js';
 import ReferralLedger from '../models/ReferralLedger.js';
 import ReferralWithdrawalRequest from '../models/ReferralWithdrawalRequest.js';
+import ReferralClosure from '../models/ReferralClosure.js';
 import { auth, admin } from '../middleware/auth.js';
 import { formatLocalISO, toEpochMs } from '../utils/time.js';
 import { backfillUserMembership } from '../services/membership.js';
@@ -766,6 +767,116 @@ router.get('/referrals/tree', auth, async (req, res) => {
     return res.json({ depth: levels.length, levels });
   } catch (err) {
     console.error('referral tree error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Upline lookup: who referred the user (and their chain up to N levels)
+router.get('/referrals/upline', auth, async (req, res) => {
+  try {
+    const config = getReferralConfig();
+    const maxDepth = Math.max(1, Number.isFinite(config.maxDepth) ? config.maxDepth : 10);
+    const depthRaw = parseInt(req.query?.depth ?? `${maxDepth}`, 10);
+    const depth = Number.isFinite(depthRaw) && depthRaw > 0
+      ? Math.min(depthRaw, maxDepth)
+      : maxDepth;
+
+    const requestedUserId = req.query?.userId;
+    const targetUserId = (() => {
+      if (req.user?.role === 'admin' && requestedUserId && mongoose.Types.ObjectId.isValid(requestedUserId)) {
+        return requestedUserId;
+      }
+      return req.user.id;
+    })();
+
+    if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
+      return res.status(400).json({ error: 'invalid_user_id' });
+    }
+
+    const user = await User.findById(targetUserId)
+      .select('_id name email phone referralCode referredBy pendingReferredBy referralActivatedAt createdAt loginCount')
+      .lean();
+
+    if (!user) {
+      return res.status(404).json({ error: 'user_not_found' });
+    }
+
+    const directReferrerId = user.referredBy || user.pendingReferredBy || null;
+
+    const closureDocs = await ReferralClosure.find({
+      descendantId: targetUserId,
+      depth: { $gte: 1, $lte: depth },
+    })
+      .sort({ depth: 1 })
+      .populate('ancestorId', '_id name email phone referralCode referredBy referralActivatedAt createdAt loginCount')
+      .lean();
+
+    const ancestors = [];
+    let usedClosure = false;
+
+    if (closureDocs.length) {
+      usedClosure = true;
+      closureDocs.forEach((doc) => {
+        if (!doc?.ancestorId) return;
+        ancestors.push({
+          level: doc.depth,
+          id: doc.ancestorId._id,
+          name: doc.ancestorId.name || null,
+          email: doc.ancestorId.email || null,
+          phone: doc.ancestorId.phone || null,
+          referralCode: doc.ancestorId.referralCode || null,
+          referralShareLink: buildReferralShareLink(doc.ancestorId.referralCode),
+          referredBy: doc.ancestorId.referredBy ? doc.ancestorId.referredBy.toString() : null,
+          referralActivatedAt: doc.ancestorId.referralActivatedAt || null,
+          createdAt: doc.ancestorId.createdAt,
+          loginCount: doc.ancestorId.loginCount || 0,
+        });
+      });
+    }
+
+    if (!ancestors.length && directReferrerId) {
+      const visited = new Set();
+      let current = directReferrerId;
+
+      for (let level = 1; level <= depth && current; level += 1) {
+        const key = current.toString();
+        if (visited.has(key)) break;
+        visited.add(key);
+
+        if (!mongoose.Types.ObjectId.isValid(current)) break;
+        const ancestor = await User.findById(current)
+          .select('_id name email phone referralCode referredBy referralActivatedAt createdAt loginCount')
+          .lean();
+        if (!ancestor) break;
+
+        ancestors.push({
+          level,
+          id: ancestor._id,
+          name: ancestor.name || null,
+          email: ancestor.email || null,
+          phone: ancestor.phone || null,
+          referralCode: ancestor.referralCode || null,
+          referralShareLink: buildReferralShareLink(ancestor.referralCode),
+          referredBy: ancestor.referredBy ? ancestor.referredBy.toString() : null,
+          referralActivatedAt: ancestor.referralActivatedAt || null,
+          createdAt: ancestor.createdAt,
+          loginCount: ancestor.loginCount || 0,
+        });
+
+        current = ancestor.referredBy || null;
+      }
+    }
+
+    return res.json({
+      userId: user._id,
+      directReferrerId: directReferrerId ? directReferrerId.toString() : null,
+      directReferrerStatus: user.referredBy ? 'CONFIRMED' : user.pendingReferredBy ? 'PENDING' : null,
+      depth: ancestors.length,
+      usedClosure,
+      ancestors,
+    });
+  } catch (err) {
+    console.error('referral upline error', err);
     return res.status(500).json({ error: 'server error' });
   }
 });
