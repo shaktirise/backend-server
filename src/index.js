@@ -23,6 +23,7 @@ import tradeMessageRoutes from './routes/tradeMessages.js';
 import deeplinkRoutes from './routes/deeplink.js';
 import kycAadhaarRoutes from './routes/kycAadhaar.js';
 import mockKycProviderRoutes from './routes/mockKycProvider.js';
+import notificationRoutes from './routes/notifications.js';
 import Wallet from './models/Wallet.js';
 import WalletLedger from './models/WalletLedger.js';
 import { WALLET_LEDGER_TYPES } from './constants/walletLedger.js';
@@ -214,6 +215,7 @@ app.use('/api/segments', segmentRoutes);
 app.use('/api/images', imageRoutes);
 app.use('/api/daily-tip', dailyTipRoutes);
 app.use('/api/trade-messages', tradeMessageRoutes);
+app.use('/api/notifications', notificationRoutes);
 app.use('/api/mlm', mlmRoutes);
 // Deep linking: both API and root-level well-known endpoints
 app.use(deeplinkRoutes);
