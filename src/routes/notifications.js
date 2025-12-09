@@ -1,12 +1,21 @@
 import express from 'express';
-<<<<<<< HEAD
 import mongoose from 'mongoose';
-import { auth, admin as requireAdmin } from '../middleware/auth.js';
 import NotificationToken from '../models/NotificationToken.js';
+import User from '../models/User.js';
+import { normalizeSegmentKey, SEGMENT_KEYS } from '../models/SegmentMessage.js';
+import { auth, admin as requireAdmin } from '../middleware/auth.js';
 import { sendPushNotification, isPushConfigured } from '../services/push.js';
 import { formatLocalISO, toEpochMs } from '../utils/time.js';
 
 const router = express.Router();
+
+function normalizeSegments(list) {
+  if (!Array.isArray(list)) return null;
+  const normalized = list
+    .map((value) => normalizeSegmentKey(value))
+    .filter(Boolean);
+  return Array.from(new Set(normalized));
+}
 
 function normalizePlatform(platform) {
   const value = String(platform || '').trim().toLowerCase();
@@ -16,7 +25,7 @@ function normalizePlatform(platform) {
 
 function serializeToken(doc) {
   if (!doc) return null;
-  const lastActive = doc.lastActiveAt || doc.updatedAt || doc.createdAt || null;
+  const lastActive = doc.lastActiveAt || doc.lastSeenAt || doc.updatedAt || doc.createdAt || null;
   return {
     id: doc._id,
     token: doc.token,
@@ -26,6 +35,7 @@ function serializeToken(doc) {
     appVersion: doc.appVersion || null,
     deviceModel: doc.deviceModel || null,
     osVersion: doc.osVersion || null,
+    segments: Array.isArray(doc.segments) ? doc.segments : [],
     lastActiveAt: lastActive,
     lastActiveAtLocal: lastActive ? formatLocalISO(lastActive) : null,
     lastActiveAtMs: lastActive ? toEpochMs(lastActive) : null,
@@ -40,7 +50,10 @@ router.get('/status', auth, (req, res) => {
 router.post('/register', auth, async (req, res) => {
   try {
     const {
+      fcm_token,
+      fcmToken,
       token,
+      segments,
       platform,
       deviceId,
       appId,
@@ -48,27 +61,45 @@ router.post('/register', auth, async (req, res) => {
       deviceModel,
       osVersion,
     } = req.body || {};
-    const tokenStr = typeof token === 'string' ? token.trim() : '';
-    if (!tokenStr || tokenStr.length < 10) {
+    const resolvedToken = String(fcm_token || fcmToken || token || '').trim();
+    if (!resolvedToken || resolvedToken.length < 10) {
       return res.status(400).json({ error: 'valid_token_required' });
     }
 
-    const update = {
-      userId: req.user.id,
+    const normalizedSegments = normalizeSegments(segments);
+    const now = new Date();
+
+    const setDoc = {
+      userId: req.user?.id,
       platform: normalizePlatform(platform),
-      deviceId: deviceId || undefined,
-      appId: appId || undefined,
-      appVersion: appVersion || undefined,
-      deviceModel: deviceModel || undefined,
-      osVersion: osVersion || undefined,
-      lastActiveAt: new Date(),
+      lastActiveAt: now,
+      lastSeenAt: now,
       disabled: false,
     };
 
+    if (typeof deviceId === 'string') {
+      setDoc.deviceId = deviceId.trim().slice(0, 100);
+    }
+    if (typeof appId === 'string') {
+      setDoc.appId = appId.trim().slice(0, 100);
+    }
+    if (typeof appVersion === 'string') {
+      setDoc.appVersion = appVersion.trim().slice(0, 50);
+    }
+    if (typeof deviceModel === 'string') {
+      setDoc.deviceModel = deviceModel.trim().slice(0, 100);
+    }
+    if (typeof osVersion === 'string') {
+      setDoc.osVersion = osVersion.trim().slice(0, 50);
+    }
+    if (normalizedSegments !== null) {
+      setDoc.segments = normalizedSegments;
+    }
+
     const doc = await NotificationToken.findOneAndUpdate(
-      { token: tokenStr },
-      { $set: update, $setOnInsert: { token: tokenStr } },
-      { new: true, upsert: true },
+      { token: resolvedToken },
+      { $set: setDoc, $setOnInsert: { token: resolvedToken } },
+      { new: true, upsert: true, setDefaultsOnInsert: true },
     );
 
     return res.json({ ok: true, token: serializeToken(doc), pushConfigured: isPushConfigured() });
@@ -80,10 +111,12 @@ router.post('/register', auth, async (req, res) => {
 
 router.post('/unregister', auth, async (req, res) => {
   try {
-    const token = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
-    if (!token) return res.status(400).json({ error: 'token_required' });
+    const resolvedToken = String(
+      req.body?.fcm_token || req.body?.fcmToken || req.body?.token || '',
+    ).trim();
+    if (!resolvedToken) return res.status(400).json({ error: 'token_required' });
 
-    const result = await NotificationToken.deleteOne({ token, userId: req.user.id });
+    const result = await NotificationToken.deleteOne({ token: resolvedToken, userId: req.user.id });
     return res.json({ ok: true, deleted: result.deletedCount || 0 });
   } catch (err) {
     console.error('notification unregister error', err);
@@ -128,7 +161,7 @@ router.post('/test', auth, async (req, res) => {
       );
     }
 
-    return res.json({ ...result, tokens: tokenValues.length });
+    return res.json({ ...result, tokens: tokenValues.length, pushConfigured: isPushConfigured() });
   } catch (err) {
     console.error('notification test error', err);
     return res.status(500).json({ error: 'server error' });
@@ -191,91 +224,24 @@ router.post('/send', auth, requireAdmin, async (req, res) => {
       );
     }
 
-    return res.json({ ...result, tokens: uniqueTokens.length });
+    return res.json({ ...result, tokens: uniqueTokens.length, pushConfigured: isPushConfigured() });
   } catch (err) {
     console.error('notification send error', err);
     return res.status(500).json({ error: 'server error' });
-=======
-import NotificationToken from '../models/NotificationToken.js';
-import User from '../models/User.js';
-import { normalizeSegmentKey, SEGMENT_KEYS } from '../models/SegmentMessage.js';
-import { auth, admin } from '../middleware/auth.js';
-import { isPushConfigured, sendPushToTokens } from '../services/pushNotifications.js';
-
-const router = express.Router();
-
-function normalizeSegments(list) {
-  if (!Array.isArray(list)) return null;
-  const normalized = list
-    .map((value) => normalizeSegmentKey(value))
-    .filter(Boolean);
-  return Array.from(new Set(normalized));
-}
-
-function normalizePlatform(value) {
-  const supported = ['android', 'ios', 'web'];
-  const val = String(value || '').toLowerCase();
-  return supported.includes(val) ? val : 'unknown';
-}
-
-router.post('/register', auth, async (req, res) => {
-  try {
-    const { fcm_token, fcmToken, token, segments, platform, deviceId, appVersion } = req.body || {};
-    const resolvedToken = String(fcm_token || fcmToken || token || '').trim();
-    if (!resolvedToken) return res.status(400).json({ error: 'token_required' });
-
-    const normalizedSegments = normalizeSegments(segments);
-    const now = new Date();
-
-    const setDoc = {
-      userId: req.user?.id || null,
-      platform: normalizePlatform(platform),
-      lastSeenAt: now,
-    };
-
-    if (typeof deviceId === 'string') {
-      setDoc.deviceId = deviceId.trim().slice(0, 100);
-    }
-    if (typeof appVersion === 'string') {
-      setDoc.appVersion = appVersion.trim().slice(0, 50);
-    }
-    if (normalizedSegments !== null) {
-      setDoc.segments = normalizedSegments;
-    }
-
-    const update = {
-      $set: setDoc,
-      $setOnInsert: { token: resolvedToken },
-    };
-
-    const doc = await NotificationToken.findOneAndUpdate(
-      { token: resolvedToken },
-      update,
-      { new: true, upsert: true, setDefaultsOnInsert: true }
-    ).lean();
-
-    return res.json({
-      ok: true,
-      token: doc.token,
-      platform: doc.platform,
-      segments: doc.segments || [],
-      pushConfigured: isPushConfigured(),
-    });
-  } catch (err) {
-    console.error('Failed to register notification token', err);
-    return res.status(500).json({ error: 'server_error' });
   }
 });
 
-router.post('/segment/:segment', auth, admin, async (req, res) => {
+router.post('/segment/:segment', auth, requireAdmin, async (req, res) => {
   try {
     const key = normalizeSegmentKey(req.params.segment);
     if (!key) return res.status(404).json({ error: 'segment_not_found', allowed: SEGMENT_KEYS });
 
-    const { title, body, data } = req.body || {};
+    const { title, body, data, imageUrl } = req.body || {};
     if (!title || !body) return res.status(400).json({ error: 'title_and_body_required' });
 
-    const tokens = await NotificationToken.find({ segments: key }).select('token').lean();
+    const tokens = await NotificationToken.find({ segments: key, disabled: { $ne: true } })
+      .select('token')
+      .lean();
     const tokenList = tokens.map((t) => t.token).filter(Boolean);
 
     if (!tokenList.length) {
@@ -297,15 +263,19 @@ router.post('/segment/:segment', auth, admin, async (req, res) => {
       type: (data && data.type) || 'segment_alert',
     };
 
-    const result = await sendPushToTokens({
+    const result = await sendPushNotification({
       tokens: tokenList,
       title,
       body,
       data: payloadData,
+      imageUrl,
     });
 
     if (result.invalidTokens?.length) {
-      await NotificationToken.deleteMany({ token: { $in: result.invalidTokens } });
+      await NotificationToken.updateMany(
+        { token: { $in: result.invalidTokens } },
+        { $set: { disabled: true } },
+      );
     }
 
     return res.json({
@@ -313,27 +283,32 @@ router.post('/segment/:segment', auth, admin, async (req, res) => {
       segment: key,
       sent: result.success || 0,
       failed: result.failure || 0,
-      total: result.total || tokenList.length,
+      total: result.requested || tokenList.length,
       invalidTokens: result.invalidTokens || [],
-      simulated: result.simulated || false,
+      simulated: !isPushConfigured() && result.ok === false,
       pushConfigured: isPushConfigured(),
     });
   } catch (err) {
     console.error('Failed to send segment notification', err);
-    return res.status(500).json({ error: 'server_error' });
+    return res.status(500).json({ error: 'server error' });
   }
 });
 
-router.post('/user/:userId', auth, admin, async (req, res) => {
+router.post('/user/:userId', auth, requireAdmin, async (req, res) => {
   try {
     const { userId } = req.params;
-    const { title, body, data } = req.body || {};
+    const { title, body, data, imageUrl } = req.body || {};
     if (!title || !body) return res.status(400).json({ error: 'title_and_body_required' });
 
     const user = await User.findById(userId).select('_id').lean();
     if (!user) return res.status(404).json({ error: 'user_not_found' });
 
-    const tokens = await NotificationToken.find({ userId: user._id }).select('token').lean();
+    const tokens = await NotificationToken.find({
+      userId: user._id,
+      disabled: { $ne: true },
+    })
+      .select('token')
+      .lean();
     const tokenList = tokens.map((t) => t.token).filter(Boolean);
 
     if (!tokenList.length) {
@@ -355,15 +330,19 @@ router.post('/user/:userId', auth, admin, async (req, res) => {
       userId: String(userId),
     };
 
-    const result = await sendPushToTokens({
+    const result = await sendPushNotification({
       tokens: tokenList,
       title,
       body,
       data: payloadData,
+      imageUrl,
     });
 
     if (result.invalidTokens?.length) {
-      await NotificationToken.deleteMany({ token: { $in: result.invalidTokens } });
+      await NotificationToken.updateMany(
+        { token: { $in: result.invalidTokens } },
+        { $set: { disabled: true } },
+      );
     }
 
     return res.json({
@@ -371,15 +350,14 @@ router.post('/user/:userId', auth, admin, async (req, res) => {
       userId,
       sent: result.success || 0,
       failed: result.failure || 0,
-      total: result.total || tokenList.length,
+      total: result.requested || tokenList.length,
       invalidTokens: result.invalidTokens || [],
-      simulated: result.simulated || false,
+      simulated: !isPushConfigured() && result.ok === false,
       pushConfigured: isPushConfigured(),
     });
   } catch (err) {
     console.error('Failed to send user notification', err);
-    return res.status(500).json({ error: 'server_error' });
->>>>>>> 67feb5c4e79bd31cb0e9bdce43e5f03b920a6d8a
+    return res.status(500).json({ error: 'server error' });
   }
 });
 
