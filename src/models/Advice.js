@@ -14,7 +14,7 @@ const AdviceSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Auto-delete advice 12 hours after creation so users only see fresh calls
-AdviceSchema.index({ createdAt: 1 }, { expireAfterSeconds: 12 * 60 * 60 });
+// Auto-delete advice 6 hours after creation so users only see fresh calls
+AdviceSchema.index({ createdAt: 1 }, { expireAfterSeconds: 6 * 60 * 60 });
 
 export default mongoose.model('Advice', AdviceSchema);

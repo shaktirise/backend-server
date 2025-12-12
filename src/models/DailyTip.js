@@ -10,5 +10,7 @@ const DailyTipSchema = new mongoose.Schema(
 );
 
 DailyTipSchema.index({ publishedAt: -1, createdAt: -1 });
+// Auto-delete daily tips 6 hours after publish time
+DailyTipSchema.index({ publishedAt: 1 }, { expireAfterSeconds: 6 * 60 * 60 });
 
 export default mongoose.model('DailyTip', DailyTipSchema);

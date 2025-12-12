@@ -37,7 +37,7 @@ const AdviceV2Schema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Auto-delete advice 12 hours after creation so stale calls do not clutter the feed
-AdviceV2Schema.index({ createdAt: 1 }, { expireAfterSeconds: 12 * 60 * 60 });
+// Auto-delete advice 6 hours after creation so stale calls do not clutter the feed
+AdviceV2Schema.index({ createdAt: 1 }, { expireAfterSeconds: 6 * 60 * 60 });
 
 export default mongoose.model('AdviceV2', AdviceV2Schema);
