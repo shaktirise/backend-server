@@ -18,7 +18,8 @@ import {
   buildReferralShareLink,
   getReferralConfig,
 } from '../services/referral.js';
-import {sendEmail} from "../utils/emailService.js";
+import { sendWelcomeWhatsApp } from '../services/whatsapp.js';
+import { sendEmail } from '../utils/emailService.js';
 
 const router = express.Router();
 
@@ -317,6 +318,12 @@ router.post('/signup', requestLimiter, async (req, res) => {
     await user.save();
 
     const tokens = await finalizeAuthSuccess(user, req);
+
+    if (user.phone) {
+      sendWelcomeWhatsApp({ to: user.phone, name: user.name }).catch((err) =>
+        console.error('welcome whatsapp send error', err)
+      );
+    }
 
     return res.status(201).json({
       token: tokens.token,

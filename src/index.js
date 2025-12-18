@@ -215,6 +215,7 @@ app.use('/api/segments', segmentRoutes);
 app.use('/api/images', imageRoutes);
 app.use('/api/daily-tip', dailyTipRoutes);
 app.use('/api/trade-messages', tradeMessageRoutes);
+app.use('/api/notifications', notificationRoutes);
 app.use('/api/mlm', mlmRoutes);
 app.use('/api/notifications', notificationRoutes);
 // Deep linking: both API and root-level well-known endpoints
