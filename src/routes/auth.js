@@ -1174,6 +1174,38 @@ router.get('/admin/me', auth, admin, async (req, res) => {
   }
 });
 
+
+// Download CSV of every stored user phone number for admin use
+router.get('/admin/users/phones/download', auth, admin, async (_req, res) => {
+  try {
+    const users = await User.find({ phone: { $exists: true, $ne: null, $ne: '' } })
+      .select('phone createdAt')
+      .sort({ createdAt: 1 })
+      .lean();
+
+    const sanitize = (value) => {
+      if (value == null) return '';
+      return String(value).replace(/"/g, '""');
+    };
+
+    const csvLines = [
+      'index,phone',
+      ...users.map((user, idx) => `${idx + 1},"${sanitize(user.phone)}"`),
+    ];
+
+    const csvContent = csvLines.join('\n');
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `user-phone-numbers-${timestamp}.csv`;
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    return res.status(200).send(csvContent);
+  } catch (err) {
+    console.error('admin users phone download error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
 // Pending (non-activated) referrals: users who signed up with your code but haven't paid the ₹2100 activation
 // GET /api/auth/referrals/pending?limit=50&offset=0
 router.get('/referrals/pending', auth, async (req, res) => {
