@@ -266,6 +266,8 @@ router.get('/dashboard/overview', async (req, res) => {
       newSignups,
       ledgerAggRaw,
       bonusAggRaw,
+      walletBalanceAgg,
+      pendingReferralAgg,
     ] = await Promise.all([
       User.countDocuments(baseUserFilter),
       User.countDocuments({
@@ -295,6 +297,25 @@ router.get('/dashboard/overview', async (req, res) => {
         },
       ]),
       BonusPayout.aggregate(bonusPipeline),
+      Wallet.aggregate([
+        ...(userId ? [{ $match: { userId } }] : []),
+        { $group: { _id: null, totalBalance: { $sum: '$balance' } } },
+      ]),
+      ReferralLedger.aggregate([
+        {
+          $match: {
+            status: { $in: ['pending', 'requested'] },
+            ...(userId ? { userId } : {}),
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            amountPaise: { $sum: '$amountPaise' },
+            count: { $sum: 1 },
+          },
+        },
+      ]),
     ]);
 
     const ledgerByType = {};
@@ -402,6 +423,11 @@ router.get('/dashboard/overview', async (req, res) => {
         netPaise: commissionNetPaise,
         netRupees: toRupees(commissionNetPaise),
       },
+      walletBalancePaise: ensureNumber(walletBalanceAgg?.[0]?.totalBalance),
+      walletBalanceRupees: toRupees(walletBalanceAgg?.[0]?.totalBalance),
+      pendingReferralPaise: ensureNumber(pendingReferralAgg?.[0]?.amountPaise),
+      pendingReferralRupees: toRupees(pendingReferralAgg?.[0]?.amountPaise),
+      pendingReferralCount: ensureInt(pendingReferralAgg?.[0]?.count),
       credits: {
         amountPaise: Math.max(0, totalCreditPaise),
         amountRupees: toRupees(Math.max(0, totalCreditPaise)),
