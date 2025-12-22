@@ -27,7 +27,7 @@ import {
   ensureInt,
   toRupees,
 } from '../utils/admin.js';
-import { ensureReferralCode } from '../services/referral.js';
+import { ensureReferralCode, buildReferralShareLink } from '../services/referral.js';
 
 const router = express.Router();
 
@@ -35,6 +35,7 @@ router.use(auth, admin);
 
 function buildUserPublicProfile(user) {
   if (!user) return null;
+  const referralCode = user.referralCode || null;
   return {
     id: user._id,
     name: user.name || null,
@@ -43,7 +44,11 @@ function buildUserPublicProfile(user) {
     role: user.role,
     createdAt: user.createdAt,
     lastLoginAt: user.lastLoginAt,
-    referralCode: user.referralCode || null,
+    referralCode,
+    referralShareLink: buildReferralShareLink(referralCode),
+    referralActivatedAt: user.referralActivatedAt || null,
+    referredBy: user.referredBy ? user.referredBy.toString() : null,
+    pendingReferredBy: user.pendingReferredBy ? user.pendingReferredBy.toString() : null,
     referralCount: user.referralCount || 0,
     loginCount: user.loginCount || 0,
     isDemo: Boolean(user.isDemo),
@@ -915,7 +920,9 @@ router.get('/users/:userId/referral-tree', async (req, res) => {
     const [descendantUsers, bonusAgg] = await Promise.all([
       descendantIds.length
         ? User.find({ _id: { $in: descendantIds } })
-            .select('name email phone role createdAt lastLoginAt referralCode referralCount')
+            .select(
+              'name email phone role createdAt lastLoginAt referralCode referralCount loginCount isDemo referralActivatedAt referredBy pendingReferredBy',
+            )
             .lean()
         : [],
       descendantIds.length
@@ -1028,10 +1035,14 @@ router.get('/users/:userId/referral-tree', async (req, res) => {
           },
         };
       });
+      const users = descendants
+        .map((descendant) => descendant.user)
+        .filter(Boolean);
       levelsResponse.push({
         level: lvl,
         descendantCount: descendants.length,
         descendants,
+        users,
       });
     }
 
@@ -1738,7 +1749,7 @@ router.get('/users/:userId', async (req, res) => {
     const [user, wallet, referralStats, recentPurchases, recentLedger] = await Promise.all([
       User.findById(userId)
         .select(
-          'name email phone role createdAt lastLoginAt referralCode referralCount loginCount lastLoginIp',
+          'name email phone role createdAt lastLoginAt referralCode referralCount loginCount lastLoginIp referralActivatedAt referredBy pendingReferredBy isDemo',
         )
         .lean(),
       Wallet.findOne({ userId }).lean(),
@@ -1826,7 +1837,9 @@ router.get('/users/:userId', async (req, res) => {
     const [descendantUsers, bonusAgg] = await Promise.all([
       descendantIds.length
         ? User.find({ _id: { $in: descendantIds } })
-            .select('name email phone role createdAt lastLoginAt referralCode referralCount')
+            .select(
+              'name email phone role createdAt lastLoginAt referralCode referralCount loginCount isDemo referralActivatedAt referredBy pendingReferredBy',
+            )
             .lean()
         : [],
       descendantIds.length
@@ -1939,10 +1952,14 @@ router.get('/users/:userId', async (req, res) => {
           },
         };
       });
+      const users = descendants
+        .map((descendant) => descendant.user)
+        .filter(Boolean);
       levelsResponse.push({
         level: lvl,
         descendantCount: descendants.length,
         descendants,
+        users,
       });
     }
 

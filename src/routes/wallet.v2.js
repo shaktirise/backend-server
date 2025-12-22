@@ -69,6 +69,11 @@ const MIN_TOPUP_RUPEES_AFTER_ACTIVATION = (() => {
 
 const AMOUNT_TOLERANCE_PAISE = 100; // ±₹1 tolerance
 
+const DUMMY_PAYMENT_ENABLED = (() => {
+  const raw = String(process.env.DUMMY_PAYMENT_ENABLED || '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes';
+})();
+
 async function computeDynamicMinRupees(userId) {
   const cfg = getReferralConfig();
 
@@ -153,6 +158,141 @@ function parsePagination(query) {
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 25;
   const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
   return { limit, page, skip: (page - 1) * limit };
+}
+
+function parseAmountPaiseFromBody(body) {
+  const amtPaise = Number(body?.amountPaise);
+  if (Number.isFinite(amtPaise)) return Math.round(amtPaise);
+  const amtRupees = Number(body?.amountInRupees ?? body?.amount);
+  if (Number.isFinite(amtRupees)) return Math.round(amtRupees * 100);
+  return null;
+}
+
+async function buildActivationSnapshot(userId) {
+  const latestUser = await User.findById(userId)
+    .select('accountStatus accountActivatedAt accountActiveUntil')
+    .lean();
+
+  const activation = latestUser
+    ? {
+        accountStatus: latestUser.accountStatus || null,
+        accountActivatedAt: latestUser.accountActivatedAt || null,
+        accountActivatedAtLocal: latestUser.accountActivatedAt
+          ? formatLocalISO(latestUser.accountActivatedAt)
+          : null,
+        accountActivatedAtMs: latestUser.accountActivatedAt
+          ? toEpochMs(latestUser.accountActivatedAt)
+          : null,
+        accountActiveUntil: latestUser.accountActiveUntil || null,
+        accountActiveUntilLocal: latestUser.accountActiveUntil
+          ? formatLocalISO(latestUser.accountActiveUntil)
+          : null,
+        accountActiveUntilMs: latestUser.accountActiveUntil
+          ? toEpochMs(latestUser.accountActiveUntil)
+          : null,
+      }
+    : null;
+
+  const now = Date.now();
+  const untilMs = latestUser?.accountActiveUntil ? new Date(latestUser.accountActiveUntil).getTime() : 0;
+  const remainingMs = Math.max(0, untilMs - now);
+  const membership = latestUser
+    ? {
+        status: latestUser.accountStatus || 'INACTIVE',
+        isActive: untilMs > now,
+        nowMs: now,
+        activeUntilMs: untilMs || null,
+        activeUntilLocal: untilMs ? formatLocalISO(latestUser.accountActiveUntil) : null,
+        remainingMs,
+        remainingSeconds: Math.floor(remainingMs / 1000),
+        remainingDays: untilMs ? Math.ceil(remainingMs / (24 * 60 * 60 * 1000)) : 0,
+      }
+    : null;
+
+  return { activation, membership };
+}
+
+async function applyTopupCredit({ userId, creditAmount, extRef, note, metadata }) {
+  const session = await mongoose.startSession();
+  let referralResult = { payouts: [], activated: false };
+  try {
+    await session.withTransaction(async () => {
+      const wallet = await ensureWallet(userId, session);
+
+      await Wallet.updateOne(
+        { _id: wallet._id },
+        { $inc: { balance: creditAmount } },
+        { session },
+      );
+
+      const [ledgerEntry] = await WalletLedger.create(
+        [
+          {
+            walletId: wallet._id,
+            userId: wallet.userId || userId,
+            type: WALLET_LEDGER_TYPES.DEPOSIT,
+            amount: creditAmount,
+            note,
+            extRef,
+            metadata,
+          },
+        ],
+        { session },
+      );
+
+      const cfg = getReferralConfig();
+      const near = (a, b) => Math.abs(a - b) <= 100; // 1 rupee tolerance
+      const kind = near(creditAmount, cfg.registrationFeePaise)
+        ? 'REGISTRATION'
+        : near(creditAmount, cfg.renewalFeePaise)
+          ? 'RENEWAL'
+          : undefined;
+
+      // Update membership validity for qualifying top-ups
+      // Registration: only when amount ~ registration fee
+      // Renewal: on any amount >= renewal fee
+      {
+        const regFeePaise = getReferralConfig().registrationFeePaise;
+        const renFeePaise = getReferralConfig().renewalFeePaise;
+        const isRegistration = kind === 'REGISTRATION';
+        const isRenewal = kind === 'RENEWAL' || (!isRegistration && creditAmount >= renFeePaise);
+        const addDays = isRegistration
+          ? ACCOUNT_REGISTRATION_VALID_DAYS
+          : isRenewal
+            ? ACCOUNT_RENEWAL_VALID_DAYS
+            : 0;
+        if (addDays > 0) {
+          const userDoc = await User.findById(userId).session(session);
+          if (userDoc) {
+            const nowDt = new Date();
+            const baseDt = (userDoc.accountActiveUntil && userDoc.accountActiveUntil.getTime() > nowDt.getTime())
+              ? userDoc.accountActiveUntil
+              : nowDt;
+            const newUntil = new Date(baseDt.getTime() + Math.max(1, addDays) * 24 * 60 * 60 * 1000);
+            userDoc.accountActivatedAt = nowDt;
+            userDoc.accountActiveUntil = newUntil;
+            if (userDoc.accountStatus !== 'SUSPENDED' && userDoc.accountStatus !== 'DEACTIVATED') {
+              userDoc.accountStatus = 'ACTIVE';
+            }
+            await userDoc.save({ session });
+          }
+        }
+      }
+
+      referralResult = await handleReferralTopupPayout({
+        userId,
+        topupAmountPaise: creditAmount,
+        sourceLedger: ledgerEntry,
+        session,
+        kind,
+      });
+    });
+  } finally {
+    session.endSession();
+  }
+
+  const { activation, membership } = await buildActivationSnapshot(userId);
+  return { referralResult, activation, membership };
 }
 
 router.use(auth);
@@ -313,127 +453,13 @@ router.post('/topups/verify', async (req, res) => {
       }
     }
 
-    const session = await mongoose.startSession();
-    let referralResult = { payouts: [], activated: false };
-    try {
-      await session.withTransaction(async () => {
-        const userId = req.user.sub;
-        const wallet = await ensureWallet(userId, session);
-
-        await Wallet.updateOne(
-          { _id: wallet._id },
-          { $inc: { balance: creditAmount } },
-          { session },
-        );
-
-        const [ledgerEntry] = await WalletLedger.create(
-          [
-            {
-              walletId: wallet._id,
-              userId: wallet.userId || userId,
-              type: WALLET_LEDGER_TYPES.DEPOSIT,
-              amount: creditAmount,
-              note: 'Razorpay top-up',
-              extRef: razorpay_payment_id,
-              metadata: {
-                orderId: razorpay_order_id,
-              },
-            },
-          ],
-          { session },
-        );
-
-        const cfg = getReferralConfig();
-        const near = (a, b) => Math.abs(a - b) <= 100; // ₹1 tolerance
-        const kind = near(creditAmount, cfg.registrationFeePaise)
-          ? 'REGISTRATION'
-          : near(creditAmount, cfg.renewalFeePaise)
-            ? 'RENEWAL'
-            : undefined;
-
-        // Update membership validity for qualifying top-ups
-        // Registration: only when amount ~ registration fee
-        // Renewal: on any amount >= renewal fee
-        {
-          const regFeePaise = getReferralConfig().registrationFeePaise;
-          const renFeePaise = getReferralConfig().renewalFeePaise;
-          const isRegistration = kind === 'REGISTRATION';
-          const isRenewal = kind === 'RENEWAL' || (!isRegistration && creditAmount >= renFeePaise);
-          const addDays = isRegistration
-            ? ACCOUNT_REGISTRATION_VALID_DAYS
-            : isRenewal
-              ? ACCOUNT_RENEWAL_VALID_DAYS
-              : 0;
-          if (addDays > 0) {
-            const userDoc = await User.findById(userId).session(session);
-            if (userDoc) {
-              const nowDt = new Date();
-              const baseDt = (userDoc.accountActiveUntil && userDoc.accountActiveUntil.getTime() > nowDt.getTime())
-                ? userDoc.accountActiveUntil
-                : nowDt;
-              const newUntil = new Date(baseDt.getTime() + Math.max(1, addDays) * 24 * 60 * 60 * 1000);
-              userDoc.accountActivatedAt = nowDt;
-              userDoc.accountActiveUntil = newUntil;
-              if (userDoc.accountStatus !== 'SUSPENDED' && userDoc.accountStatus !== 'DEACTIVATED') {
-                userDoc.accountStatus = 'ACTIVE';
-              }
-              await userDoc.save({ session });
-            }
-          }
-        }
-
-        referralResult = await handleReferralTopupPayout({
-          userId,
-          topupAmountPaise: creditAmount,
-          sourceLedger: ledgerEntry,
-          session,
-          kind,
-        });
-      });
-    } finally {
-      session.endSession();
-    }
-
-    // Fetch latest user activation snapshot to allow client to update UI immediately
-    const latestUser = await User.findById(req.user.sub)
-      .select('accountStatus accountActivatedAt accountActiveUntil')
-      .lean();
-
-    const activation = latestUser
-      ? {
-          accountStatus: latestUser.accountStatus || null,
-          accountActivatedAt: latestUser.accountActivatedAt || null,
-          accountActivatedAtLocal: latestUser.accountActivatedAt
-            ? formatLocalISO(latestUser.accountActivatedAt)
-            : null,
-          accountActivatedAtMs: latestUser.accountActivatedAt
-            ? toEpochMs(latestUser.accountActivatedAt)
-            : null,
-          accountActiveUntil: latestUser.accountActiveUntil || null,
-          accountActiveUntilLocal: latestUser.accountActiveUntil
-            ? formatLocalISO(latestUser.accountActiveUntil)
-            : null,
-          accountActiveUntilMs: latestUser.accountActiveUntil
-            ? toEpochMs(latestUser.accountActiveUntil)
-            : null,
-        }
-      : null;
-
-    const now = Date.now();
-    const untilMs = latestUser?.accountActiveUntil ? new Date(latestUser.accountActiveUntil).getTime() : 0;
-    const remainingMs = Math.max(0, untilMs - now);
-    const membership = latestUser
-      ? {
-          status: latestUser.accountStatus || 'INACTIVE',
-          isActive: untilMs > now,
-          nowMs: now,
-          activeUntilMs: untilMs || null,
-          activeUntilLocal: untilMs ? formatLocalISO(latestUser.accountActiveUntil) : null,
-          remainingMs,
-          remainingSeconds: Math.floor(remainingMs / 1000),
-          remainingDays: untilMs ? Math.ceil(remainingMs / (24 * 60 * 60 * 1000)) : 0,
-        }
-      : null;
+    const { referralResult, activation, membership } = await applyTopupCredit({
+      userId: req.user.sub,
+      creditAmount,
+      extRef: razorpay_payment_id,
+      note: 'Razorpay top-up',
+      metadata: { orderId: razorpay_order_id },
+    });
 
     return res.json({
       ok: true,
@@ -448,6 +474,87 @@ router.post('/topups/verify', async (req, res) => {
       return res.json({ ok: true });
     }
     return res.status(500).json({ error: 'verification_failed' });
+  }
+});
+
+router.post('/topups/dummy', async (req, res) => {
+  try {
+    if (!DUMMY_PAYMENT_ENABLED) {
+      return res.status(403).json({ error: 'dummy_payments_disabled' });
+    }
+
+    const userId = req.user.sub;
+    const creditAmount = parseAmountPaiseFromBody(req.body);
+    if (!Number.isFinite(creditAmount)) {
+      return res.status(400).json({ error: 'amount_required' });
+    }
+    if (creditAmount <= 0) {
+      return res.status(400).json({ error: 'invalid_amount' });
+    }
+
+    const firstTopup = await isFirstTopup(userId);
+    if (firstTopup) {
+      const requiredPaise = Math.round(FIRST_TOPUP_REQUIRED_RUPEES * 100);
+      if (Math.abs(creditAmount - requiredPaise) > AMOUNT_TOLERANCE_PAISE) {
+        return res.status(400).json({
+          error: 'first_topup_must_equal',
+          requiredPaise,
+          requiredRupees: FIRST_TOPUP_REQUIRED_RUPEES,
+        });
+      }
+    } else {
+      const dynamicMin = await computeDynamicMinRupees(userId);
+      const floorMin = Math.max(dynamicMin, MIN_TOPUP_RUPEES_AFTER_ACTIVATION, STATIC_MIN_TOPUP_RUPEES);
+      const minPaise = floorMin * 100;
+      if (creditAmount < minPaise) {
+        return res.status(400).json({
+          error: 'amount_below_minimum',
+          minimumPaise: minPaise,
+          minimumRupees: floorMin,
+        });
+      }
+    }
+
+    const rawRef =
+      req.body?.paymentRef ??
+      req.body?.payment_id ??
+      req.body?.dummy_payment_id ??
+      req.body?.razorpay_payment_id;
+    const paymentRef = rawRef != null && String(rawRef).trim()
+      ? String(rawRef).trim()
+      : `dummy_${req.user.sub}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+
+    const existing = await WalletLedger.findOne({ extRef: paymentRef }).lean();
+    if (existing) return res.json({ ok: true });
+
+    const rawOrderId = req.body?.order_id ?? req.body?.orderId ?? req.body?.razorpay_order_id;
+    const metadata = { source: 'dummy' };
+    if (rawOrderId != null && String(rawOrderId).trim()) {
+      metadata.orderId = String(rawOrderId).trim();
+    }
+
+    const { referralResult, activation, membership } = await applyTopupCredit({
+      userId,
+      creditAmount,
+      extRef: paymentRef,
+      note: 'Dummy top-up',
+      metadata,
+    });
+
+    return res.json({
+      ok: true,
+      creditedPaise: creditAmount,
+      paymentRef,
+      referral: referralResult,
+      activation,
+      membership,
+    });
+  } catch (e) {
+    console.error('topups/dummy error', e);
+    if (e?.code === 11000) {
+      return res.json({ ok: true });
+    }
+    return res.status(500).json({ error: 'dummy_topup_failed' });
   }
 });
 
