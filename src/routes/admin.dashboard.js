@@ -55,6 +55,15 @@ function buildUserPublicProfile(user) {
   };
 }
 
+function resolveActivityStatus(user) {
+  if (!user) return { isActive: null, activityStatus: null };
+  const accountStatus = user.accountStatus || null;
+  const blocked = accountStatus === 'SUSPENDED' || accountStatus === 'DEACTIVATED';
+  const untilMs = user.accountActiveUntil ? new Date(user.accountActiveUntil).getTime() : 0;
+  const isActive = !blocked && untilMs > Date.now();
+  return { isActive, activityStatus: isActive ? 'ACTIVE' : 'INACTIVE' };
+}
+
 function buildWithdrawalPayload(doc) {
   if (!doc) return null;
   return {
@@ -921,7 +930,7 @@ router.get('/users/:userId/referral-tree', async (req, res) => {
       descendantIds.length
         ? User.find({ _id: { $in: descendantIds } })
             .select(
-              'name email phone role createdAt lastLoginAt referralCode referralCount loginCount isDemo referralActivatedAt referredBy pendingReferredBy',
+              'name email phone role createdAt lastLoginAt referralCode referralCount loginCount isDemo referralActivatedAt referredBy pendingReferredBy accountStatus accountActiveUntil',
             )
             .lean()
         : [],
@@ -1015,6 +1024,7 @@ router.get('/users/:userId/referral-tree', async (req, res) => {
       const descendants = ids.map((id) => {
         const key = id.toString();
         const user = userMap.get(key);
+        const activity = resolveActivityStatus(user);
         const earnings = earningsByDownline.get(key) || {
           pending: { amountPaise: 0, count: 0 },
           released: { amountPaise: 0, count: 0 },
@@ -1027,7 +1037,13 @@ router.get('/users/:userId/referral-tree', async (req, res) => {
         });
         return {
           id,
-          user: buildUserPublicProfile(user),
+          user: user
+            ? {
+                ...buildUserPublicProfile(user),
+                activityStatus: activity.activityStatus,
+                isActive: activity.isActive,
+              }
+            : null,
           earnings: {
             pending: normalizeEarnings(earnings.pending || {}),
             released: normalizeEarnings(earnings.released || {}),
@@ -1749,7 +1765,7 @@ router.get('/users/:userId', async (req, res) => {
     const [user, wallet, referralStats, recentPurchases, recentLedger] = await Promise.all([
       User.findById(userId)
         .select(
-          'name email phone role createdAt lastLoginAt referralCode referralCount loginCount lastLoginIp referralActivatedAt referredBy pendingReferredBy isDemo',
+          'name email phone role createdAt lastLoginAt referralCode referralCount loginCount lastLoginIp referralActivatedAt referredBy pendingReferredBy isDemo accountStatus accountActiveUntil',
         )
         .lean(),
       Wallet.findOne({ userId }).lean(),
@@ -1838,7 +1854,7 @@ router.get('/users/:userId', async (req, res) => {
       descendantIds.length
         ? User.find({ _id: { $in: descendantIds } })
             .select(
-              'name email phone role createdAt lastLoginAt referralCode referralCount loginCount isDemo referralActivatedAt referredBy pendingReferredBy',
+              'name email phone role createdAt lastLoginAt referralCode referralCount loginCount isDemo referralActivatedAt referredBy pendingReferredBy accountStatus accountActiveUntil',
             )
             .lean()
         : [],
@@ -1932,6 +1948,7 @@ router.get('/users/:userId', async (req, res) => {
       const descendants = ids.map((id) => {
         const key = id.toString();
         const duser = userMap.get(key);
+        const activity = resolveActivityStatus(duser);
         const earnings = earningsByDownline.get(key) || {
           pending: { amountPaise: 0, count: 0 },
           released: { amountPaise: 0, count: 0 },
@@ -1944,7 +1961,13 @@ router.get('/users/:userId', async (req, res) => {
         });
         return {
           id,
-          user: buildUserPublicProfile(duser),
+          user: duser
+            ? {
+                ...buildUserPublicProfile(duser),
+                activityStatus: activity.activityStatus,
+                isActive: activity.isActive,
+              }
+            : null,
           earnings: {
             pending: normalizeEarnings(earnings.pending || {}),
             released: normalizeEarnings(earnings.released || {}),
@@ -1963,8 +1986,14 @@ router.get('/users/:userId', async (req, res) => {
       });
     }
 
+    const rootActivity = resolveActivityStatus(user);
+
     return res.json({
-      user: buildUserPublicProfile(user),
+      user: {
+        ...buildUserPublicProfile(user),
+        activityStatus: rootActivity.activityStatus,
+        isActive: rootActivity.isActive,
+      },
       login: {
         lastLoginAt: user.lastLoginAt || null,
         lastLoginIp: user.lastLoginIp || null,

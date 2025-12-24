@@ -182,6 +182,15 @@ function buildMembershipPayload(user) {
   };
 }
 
+function resolveActivityStatus(user) {
+  if (!user) return { isActive: null, activityStatus: null };
+  const accountStatus = user.accountStatus || null;
+  const blocked = accountStatus === 'SUSPENDED' || accountStatus === 'DEACTIVATED';
+  const untilMs = user.accountActiveUntil ? new Date(user.accountActiveUntil).getTime() : 0;
+  const isActive = !blocked && untilMs > Date.now();
+  return { isActive, activityStatus: isActive ? 'ACTIVE' : 'INACTIVE' };
+}
+
 function syncAccountStatus(user) {
   // Manage only ACTIVE/INACTIVE automatically; respect SUSPENDED/DEACTIVATED
   if (user.accountStatus === 'SUSPENDED' || user.accountStatus === 'DEACTIVATED') return false;
@@ -748,7 +757,7 @@ router.get('/referrals/tree', auth, async (req, res) => {
 
     for (let level = 1; level <= depth && currentLevel.length; level += 1) {
       const nextLevelUsers = await User.find({ referredBy: { $in: currentLevel } })
-        .select('_id name email referralCode referredBy referralActivatedAt createdAt loginCount')
+        .select('_id name email referralCode referredBy referralActivatedAt createdAt loginCount accountStatus accountActiveUntil')
         .lean();
 
       if (!nextLevelUsers.length) break;
@@ -756,6 +765,7 @@ router.get('/referrals/tree', auth, async (req, res) => {
       levels.push({
         level,
         users: nextLevelUsers.map((u) => ({
+          ...resolveActivityStatus(u),
           id: u._id,
           name: u.name,
           email: u.email,
