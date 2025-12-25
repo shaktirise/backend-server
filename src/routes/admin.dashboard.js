@@ -55,6 +55,57 @@ function buildUserPublicProfile(user) {
   };
 }
 
+function buildPendingReferralUserPayload(user) {
+  if (!user) return null;
+  const profile = buildUserPublicProfile(user);
+  const referrerDoc =
+    user.pendingReferredBy && typeof user.pendingReferredBy === 'object' && user.pendingReferredBy._id
+      ? user.pendingReferredBy
+      : null;
+
+  if (referrerDoc?._id) {
+    profile.pendingReferredBy = referrerDoc._id.toString();
+  }
+
+  return {
+    ...profile,
+    pendingReferrer: referrerDoc ? buildUserPublicProfile(referrerDoc) : null,
+  };
+}
+
+async function listPendingReferralUsers(req, res, referrerId) {
+  try {
+    const { page, pageSize, limit, skip } = parsePagination(req.query);
+    const query = referrerId
+      ? { pendingReferredBy: referrerId }
+      : { pendingReferredBy: { $exists: true, $ne: null } };
+    const userSelect =
+      'name email phone role createdAt lastLoginAt referralCode referralActivatedAt referredBy pendingReferredBy referralCount loginCount isDemo';
+
+    const [users, total] = await Promise.all([
+      User.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .select(userSelect)
+        .populate('pendingReferredBy', userSelect)
+        .lean(),
+      User.countDocuments(query),
+    ]);
+
+    return res.json({
+      page,
+      pageSize: pageSize || limit,
+      limit,
+      total,
+      items: users.map(buildPendingReferralUserPayload),
+    });
+  } catch (err) {
+    console.error('admin non-paid referrals error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+}
+
 function resolveActivityStatus(user) {
   if (!user) return { isActive: null, activityStatus: null };
   const accountStatus = user.accountStatus || null;
@@ -1419,6 +1470,18 @@ router.get('/commissions', async (req, res) => {
   }
 });
 
+router.get(['/referrals/non-paid', '/referrals/nonpaid'], async (req, res) => {
+  const referrerRaw = req.query.referrerId ?? req.query.userId ?? req.query.pendingReferredBy;
+  if (referrerRaw) {
+    const referrerId = toObjectId(referrerRaw);
+    if (!referrerId) {
+      return res.status(400).json({ error: 'invalid_user_id' });
+    }
+    return listPendingReferralUsers(req, res, referrerId);
+  }
+  return listPendingReferralUsers(req, res, null);
+});
+
 router.get('/referrals/pending', async (req, res) => {
   try {
     const { limit, skip, page } = parsePagination(req.query);
@@ -2158,6 +2221,12 @@ router.get('/users/:userId/wallet-ledger', async (req, res) => {
     console.error('admin user ledger error', err);
     return res.status(500).json({ error: 'server error' });
   }
+});
+
+router.get(['/users/:userId/referrals/non-paid', '/users/:userId/referrals/nonpaid'], async (req, res) => {
+  const userId = toObjectId(req.params.userId);
+  if (!userId) return res.status(400).json({ error: 'invalid_user_id' });
+  return listPendingReferralUsers(req, res, userId);
 });
 
 router.get('/users/:userId/referrals', async (req, res) => {
