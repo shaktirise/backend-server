@@ -27,6 +27,7 @@ import notificationRoutes from './routes/notifications.js';
 import Wallet from './models/Wallet.js';
 import WalletLedger from './models/WalletLedger.js';
 import { WALLET_LEDGER_TYPES } from './constants/walletLedger.js';
+import { emitPushEvent } from './services/pushDispatcher.js';
 
 dotenv.config();
 
@@ -149,12 +150,14 @@ app.post('/api/webhooks/razorpay', bodyParser.raw({ type: '*/*' }), async (req, 
       const paymentId = payment.id;
       const amount = Number(payment.amount);
       const userId = payment?.notes?.userId;
+      const currency = (payment?.currency || 'INR').toUpperCase();
 
       if (paymentId && Number.isFinite(amount) && amount > 0 && userId) {
         const exists = await WalletLedger.findOne({ extRef: paymentId }).lean();
         if (!exists) {
           const session = await mongoose.startSession();
           try {
+            let credited = false;
             await session.withTransaction(async () => {
               const wallet = await Wallet.findOneAndUpdate(
                 { userId },
@@ -173,7 +176,11 @@ app.post('/api/webhooks/razorpay', bodyParser.raw({ type: '*/*' }), async (req, 
                   extRef: paymentId,
                 },
               ], { session });
+              credited = true;
             });
+            if (credited) {
+              emitPushEvent('wallet.deposit.captured', { userId, amount, paymentId, currency });
+            }
           } finally {
             session.endSession();
           }
