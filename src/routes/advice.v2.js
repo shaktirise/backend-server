@@ -7,9 +7,62 @@ import { ensureWallet } from '../services/wallet.js';
 import Wallet from '../models/Wallet.js';
 import WalletLedger from '../models/WalletLedger.js';
 import { auth, admin } from '../middleware/auth.js';
+import { sendPushToAll } from '../services/push.js';
 import { formatLocalISO, toEpochMs } from '../utils/time.js';
 
 const router = express.Router();
+
+const ADVICE_PUSH_LABELS = {
+  STOCKS: 'Stocks',
+  FUTURE: 'Future',
+  OPTIONS: 'Options',
+  COMMODITY: 'Commodity',
+};
+
+function buildAdviceNotification(doc, overrides = {}) {
+  const label = ADVICE_PUSH_LABELS[doc.category] || doc.category;
+  const title = typeof overrides.title === 'string' && overrides.title.trim()
+    ? overrides.title.trim()
+    : `${label} update`;
+  const body = typeof overrides.body === 'string' && overrides.body.trim()
+    ? overrides.body.trim()
+    : `${label} has a new message.`;
+  const data = {
+    type: 'advice_v2',
+    category: doc.category,
+    adviceId: doc._id.toString(),
+  };
+  if (overrides.data && typeof overrides.data === 'object') {
+    Object.entries(overrides.data).forEach(([key, value]) => {
+      if (value !== undefined) data[key] = value;
+    });
+  }
+  return { title, body, data };
+}
+
+async function maybeSendAdvicePush(doc, req) {
+  const notify = req.body?.notify !== false;
+  if (!notify) return null;
+
+  const payload = buildAdviceNotification(doc, {
+    title: req.body?.notifyTitle,
+    body: req.body?.notifyBody,
+    data: req.body?.notifyData,
+  });
+  const dryRun = req.body?.dryRun === true;
+
+  try {
+    return await sendPushToAll({
+      title: payload.title,
+      body: payload.body,
+      data: payload.data,
+      dryRun,
+    });
+  } catch (err) {
+    console.error('advice-v2 push error', err);
+    return { ok: false, error: 'push_failed' };
+  }
+}
 
 async function createAdviceForCategory(category, { text, buy, target, stoploss, price }, userId) {
   const normalized = normalizeAdviceV2Category(category);
@@ -54,7 +107,8 @@ router.post('/', auth, admin, async (req, res) => {
   try {
     const { category, text, price, buy, target, stoploss } = req.body || {};
     const doc = await createAdviceForCategory(category, { text, buy, target, stoploss, price }, req.user?.id);
-    return res.json({ ok: true, id: doc._id, category: doc.category });
+    const push = await maybeSendAdvicePush(doc, req);
+    return res.json({ ok: true, id: doc._id, category: doc.category, push });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: 'server error' });
@@ -65,7 +119,8 @@ router.post('/', auth, admin, async (req, res) => {
 router.post('/stocks', auth, admin, async (req, res) => {
   try {
     const doc = await createAdviceForCategory('STOCKS', req.body || {}, req.user?.id);
-    return res.json({ ok: true, id: doc._id, category: doc.category });
+    const push = await maybeSendAdvicePush(doc, req);
+    return res.json({ ok: true, id: doc._id, category: doc.category, push });
   } catch (e) {
     if (e?.code === 'MESSAGE_REQUIRED') return res.status(400).json({ error: 'message required' });
     console.error(e);
@@ -76,7 +131,8 @@ router.post('/stocks', auth, admin, async (req, res) => {
 router.post('/options', auth, admin, async (req, res) => {
   try {
     const doc = await createAdviceForCategory('OPTIONS', req.body || {}, req.user?.id);
-    return res.json({ ok: true, id: doc._id, category: doc.category });
+    const push = await maybeSendAdvicePush(doc, req);
+    return res.json({ ok: true, id: doc._id, category: doc.category, push });
   } catch (e) {
     if (e?.code === 'MESSAGE_REQUIRED') return res.status(400).json({ error: 'message required' });
     console.error(e);
@@ -87,7 +143,8 @@ router.post('/options', auth, admin, async (req, res) => {
 router.post('/future', auth, admin, async (req, res) => {
   try {
     const doc = await createAdviceForCategory('FUTURE', req.body || {}, req.user?.id);
-    return res.json({ ok: true, id: doc._id, category: doc.category });
+    const push = await maybeSendAdvicePush(doc, req);
+    return res.json({ ok: true, id: doc._id, category: doc.category, push });
   } catch (e) {
     if (e?.code === 'MESSAGE_REQUIRED') return res.status(400).json({ error: 'message required' });
     console.error(e);
@@ -98,7 +155,8 @@ router.post('/future', auth, admin, async (req, res) => {
 router.post('/commodity', auth, admin, async (req, res) => {
   try {
     const doc = await createAdviceForCategory('COMMODITY', req.body || {}, req.user?.id);
-    return res.json({ ok: true, id: doc._id, category: doc.category });
+    const push = await maybeSendAdvicePush(doc, req);
+    return res.json({ ok: true, id: doc._id, category: doc.category, push });
   } catch (e) {
     if (e?.code === 'MESSAGE_REQUIRED') return res.status(400).json({ error: 'message required' });
     console.error(e);

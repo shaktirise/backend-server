@@ -140,6 +140,13 @@ async function fetchActiveTokens({ userIds = [], tokens = [], segments = [] } = 
   return normalizeTokens(resolvedTokens);
 }
 
+async function fetchAllActiveTokens() {
+  const docs = await NotificationToken.find({ disabled: { $ne: true } })
+    .select('token')
+    .lean();
+  return normalizeTokens(docs.map((doc) => doc.token).filter(Boolean));
+}
+
 function buildMessagePayload({ title, body, data, imageUrl }) {
   const payloadData = normalizeDataPayload(data);
   const message = {
@@ -260,6 +267,25 @@ export async function sendPushNotification({
     };
   } catch (err) {
     logNonBlockingError('[Push] Unexpected send error', err);
+    return { ok: false, error: 'send_failed', message: err?.message };
+  }
+}
+
+export async function sendPushToAll({
+  title,
+  body,
+  data = {},
+  imageUrl,
+  dryRun = false,
+} = {}) {
+  try {
+    const tokens = await fetchAllActiveTokens();
+    if (!tokens.length) {
+      return { ok: false, error: 'no_tokens' };
+    }
+    return await sendPushNotification({ tokens, title, body, data, imageUrl, dryRun });
+  } catch (err) {
+    logNonBlockingError('[Push] Broadcast send error', err);
     return { ok: false, error: 'send_failed', message: err?.message };
   }
 }

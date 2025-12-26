@@ -4,9 +4,62 @@ import { requireActiveMembership } from '../middleware/membership.js';
 import TradeMessage, { TRADE_MESSAGE_CATEGORIES, normalizeTradeMessageCategory } from '../models/TradeMessage.js';
 import TradeMessageHistory from '../models/TradeMessageHistory.js';
 import { sendTextSms } from '../services/sms.js';
+import { sendPushToAll } from '../services/push.js';
 import { formatLocalISO, toEpochMs } from '../utils/time.js';
 
 const router = express.Router();
+
+const TRADE_PUSH_LABELS = {
+  STOCKS: 'Stocks',
+  FUTURE: 'Future',
+  OPTIONS: 'Options',
+  COMMODITY: 'Commodity',
+};
+
+function buildTradeNotification(doc, overrides = {}) {
+  const label = TRADE_PUSH_LABELS[doc.category] || doc.category;
+  const title = typeof overrides.title === 'string' && overrides.title.trim()
+    ? overrides.title.trim()
+    : `${label} update`;
+  const body = typeof overrides.body === 'string' && overrides.body.trim()
+    ? overrides.body.trim()
+    : `${label} has a new message.`;
+  const data = {
+    type: 'trade_message',
+    category: doc.category,
+    tradeMessageId: doc._id.toString(),
+  };
+  if (overrides.data && typeof overrides.data === 'object') {
+    Object.entries(overrides.data).forEach(([key, value]) => {
+      if (value !== undefined) data[key] = value;
+    });
+  }
+  return { title, body, data };
+}
+
+async function maybeSendTradePush(doc, req) {
+  const notify = req.body?.notify !== false;
+  if (!notify) return null;
+
+  const payload = buildTradeNotification(doc, {
+    title: req.body?.notifyTitle,
+    body: req.body?.notifyBody,
+    data: req.body?.notifyData,
+  });
+  const dryRun = req.body?.dryRun === true;
+
+  try {
+    return await sendPushToAll({
+      title: payload.title,
+      body: payload.body,
+      data: payload.data,
+      dryRun,
+    });
+  } catch (err) {
+    console.error('trade-messages push error', err);
+    return { ok: false, error: 'push_failed' };
+  }
+}
 
 function serialize(doc, fallbackCategory) {
   if (!doc) {
@@ -143,7 +196,8 @@ router.post('/:category', auth, admin, async (req, res) => {
       io.emit('trade-message:update', { category: payload.category, updatedAt: payload.updatedAt, updatedAtLocal: payload.updatedAtLocal, updatedAtMs: payload.updatedAtMs });
     }
 
-    return res.json({ ok: true, message: payload });
+    const push = await maybeSendTradePush(doc, req);
+    return res.json({ ok: true, message: payload, push });
   } catch (err) {
     console.error('trade-messages upsert error', err);
     return res.status(500).json({ error: 'server error' });
