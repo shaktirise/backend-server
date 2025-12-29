@@ -4,7 +4,7 @@ import NotificationToken from '../models/NotificationToken.js';
 import User from '../models/User.js';
 import { normalizeSegmentKey, SEGMENT_KEYS } from '../models/SegmentMessage.js';
 import { auth, admin as requireAdmin } from '../middleware/auth.js';
-import { sendPushNotification, isPushConfigured } from '../services/push.js';
+import { sendPushNotification, sendPushToAll, isPushConfigured } from '../services/push.js';
 import { formatLocalISO, toEpochMs } from '../utils/time.js';
 
 const router = express.Router();
@@ -234,6 +234,42 @@ router.post('/send', auth, requireAdmin, async (req, res) => {
     return res.json({ ...result, tokens: uniqueTokens.length, pushConfigured: isPushConfigured() });
   } catch (err) {
     console.error('notification send error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.post('/broadcast', auth, requireAdmin, async (req, res) => {
+  try {
+    const {
+      title,
+      body,
+      data,
+      imageUrl,
+      dryRun,
+    } = req.body || {};
+    const titleFromData = typeof data?.title === 'string' ? data.title.trim() : '';
+    const bodyFromData = typeof data?.body === 'string' ? data.body.trim() : '';
+    const resolvedTitle = (typeof title === 'string' ? title.trim() : '') || titleFromData;
+    const resolvedBody = (typeof body === 'string' ? body.trim() : '') || bodyFromData;
+    if (!resolvedTitle && !resolvedBody) {
+      return res.status(400).json({ error: 'title_or_body_required' });
+    }
+
+    const result = await sendPushToAll({
+      title: resolvedTitle || undefined,
+      body: resolvedBody || undefined,
+      data,
+      imageUrl,
+      dryRun: !!dryRun,
+    });
+
+    if (result?.error === 'no_tokens') {
+      return res.status(404).json({ error: 'no_tokens_found' });
+    }
+
+    return res.json({ ...result, pushConfigured: isPushConfigured() });
+  } catch (err) {
+    console.error('notification broadcast error', err);
     return res.status(500).json({ error: 'server error' });
   }
 });
