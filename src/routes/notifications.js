@@ -179,6 +179,13 @@ router.post('/send', auth, requireAdmin, async (req, res) => {
       imageUrl,
       dryRun,
     } = req.body || {};
+    const titleFromData = typeof data?.title === 'string' ? data.title.trim() : '';
+    const bodyFromData = typeof data?.body === 'string' ? data.body.trim() : '';
+    const resolvedTitle = (typeof title === 'string' ? title.trim() : '') || titleFromData;
+    const resolvedBody = (typeof body === 'string' ? body.trim() : '') || bodyFromData;
+    if (!resolvedTitle && !resolvedBody) {
+      return res.status(400).json({ error: 'title_or_body_required' });
+    }
 
     const validUserIds = Array.isArray(userIds)
       ? userIds.filter((id) => mongoose.Types.ObjectId.isValid(id)).map((id) => new mongoose.Types.ObjectId(id))
@@ -210,8 +217,8 @@ router.post('/send', auth, requireAdmin, async (req, res) => {
 
     const result = await sendPushNotification({
       tokens: uniqueTokens,
-      title,
-      body,
+      title: resolvedTitle || undefined,
+      body: resolvedBody || undefined,
       data,
       imageUrl,
       dryRun: !!dryRun,
