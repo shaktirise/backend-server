@@ -71,6 +71,10 @@ const AMOUNT_TOLERANCE_PAISE = 100; // ±₹1 tolerance
 
 const DUMMY_PAYMENT_ENABLED = (() => {
   const raw = String(process.env.DUMMY_PAYMENT_ENABLED || '').trim().toLowerCase();
+  if (!raw && process.env.NODE_ENV !== 'production') {
+    // Make dummy payments available by default in non-production for QA flows
+    return true;
+  }
   return raw === '1' || raw === 'true' || raw === 'yes';
 })();
 

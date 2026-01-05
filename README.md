@@ -69,6 +69,11 @@ npm install
 npm run dev
 ```
 
+Dummy payments for QA (Razorpay not required):
+- Set `DUMMY_PAYMENT_ENABLED=1` in `.env` (default for non-production).
+- Call `POST /api/wallet/topups/dummy` with an auth Bearer token and body `{ "amountInRupees": 2100 }` (or `amountPaise`/`amount`).
+- The request mirrors real top-ups: wallet is credited and membership/activation payload is returned for the client.
+
 Key endpoints:
 - `GET /` simple status payload for uptime checks.
 - Membership: GET /api/auth/me (returns membership countdown)
