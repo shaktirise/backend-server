@@ -9,6 +9,7 @@ import ReferralLedger from '../models/ReferralLedger.js';
 import ReferralWithdrawalRequest from '../models/ReferralWithdrawalRequest.js';
 import Purchase from '../models/Purchase.js';
 import DailyTip from '../models/DailyTip.js';
+import MutualFundEnrollment from '../models/MutualFundEnrollment.js';
 import BonusPayout from '../models/BonusPayout.js';
 import ActivationEvent from '../models/ActivationEvent.js';
 import ReferralClosure from '../models/ReferralClosure.js';
@@ -178,6 +179,87 @@ function parseDate(value) {
   const ts = Date.parse(value);
   if (Number.isNaN(ts)) return null;
   return new Date(ts);
+}
+
+function sanitizeString(value, fallback = null) {
+  if (typeof value === 'string') {
+    const text = value.trim();
+    return text || fallback;
+  }
+  return fallback;
+}
+
+const MUTUAL_FUND_ENROLLMENT_STATUS = new Set(['DRAFT', 'SUBMITTED']);
+const REQUIRED_MUTUAL_FUND_FIELDS = [
+  'fullName',
+  'dateOfBirth',
+  'mobileNumber',
+  'emailId',
+  'panNumber',
+  'city',
+  'state',
+  'pinCode',
+  'isNewToMutualFunds',
+  'approximateInvestmentAmount',
+  'investmentTypeInterested',
+  'preferredContactTime',
+  'consentToBeContacted',
+  'declarationDate',
+  'signatureOrDigitalConsent',
+];
+
+function evaluateMutualFundEnrollmentCompletion(doc) {
+  const filled = REQUIRED_MUTUAL_FUND_FIELDS.reduce((count, key) => {
+    const value = doc?.[key];
+    if (key === 'consentToBeContacted') {
+      return value === true ? count + 1 : count;
+    }
+    if (key === 'isNewToMutualFunds') {
+      return typeof value === 'boolean' ? count + 1 : count;
+    }
+    if (key === 'declarationDate') {
+      return value instanceof Date ? count + 1 : count;
+    }
+    return value ? count + 1 : count;
+  }, 0);
+
+  const completionPercent = Math.round((filled / REQUIRED_MUTUAL_FUND_FIELDS.length) * 100);
+  return {
+    isComplete: filled === REQUIRED_MUTUAL_FUND_FIELDS.length,
+    completionPercent,
+  };
+}
+
+function buildMutualFundEnrollmentPayload(doc) {
+  if (!doc) return null;
+  const completion = evaluateMutualFundEnrollmentCompletion(doc);
+  return {
+    id: doc._id,
+    status: doc.status || 'DRAFT',
+    fullName: doc.fullName || null,
+    dateOfBirth: doc.dateOfBirth || null,
+    mobileNumber: doc.mobileNumber || null,
+    emailId: doc.emailId || null,
+    panNumber: doc.panNumber || null,
+    city: doc.city || null,
+    state: doc.state || null,
+    pinCode: doc.pinCode || null,
+    isNewToMutualFunds: doc.isNewToMutualFunds ?? null,
+    approximateInvestmentAmount: doc.approximateInvestmentAmount || null,
+    investmentTypeInterested: doc.investmentTypeInterested || null,
+    preferredContactTime: doc.preferredContactTime || null,
+    consentToBeContacted: !!doc.consentToBeContacted,
+    declarationDate: doc.declarationDate || null,
+    signatureOrDigitalConsent: doc.signatureOrDigitalConsent || null,
+    completionPercent: completion.completionPercent,
+    isComplete: completion.isComplete,
+    submittedAt: doc.submittedAt || null,
+    source: doc.source || null,
+    ipAddress: doc.ipAddress || null,
+    userAgent: sanitizeString(doc.userAgent, null),
+    createdAt: doc.createdAt,
+    updatedAt: doc.updatedAt,
+  };
 }
 
 async function computeReferralCountsFallback(userId, depth) {
@@ -586,6 +668,86 @@ router.get('/dashboard/calls', async (req, res) => {
     });
   } catch (err) {
     console.error('admin calls list error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.get('/mutual-fund-enrollments', async (req, res) => {
+  try {
+    const { page, pageSize, limit, skip } = parsePagination(req.query);
+    const { from, to } = parseDateRange(req.query);
+    const status = sanitizeString(req.query?.status, '').toUpperCase();
+    const search = sanitizeString(req.query?.q || req.query?.search, '');
+
+    const query = {};
+    if (MUTUAL_FUND_ENROLLMENT_STATUS.has(status)) {
+      query.status = status;
+    }
+
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(escaped, 'i');
+      query.$or = [
+        { fullName: regex },
+        { emailId: regex },
+        { mobileNumber: regex },
+        { panNumber: regex },
+        { city: regex },
+        { state: regex },
+      ];
+    }
+
+    if (from || to) {
+      query.createdAt = {};
+      if (from) query.createdAt.$gte = from;
+      if (to) query.createdAt.$lte = to;
+    }
+
+    const [itemsRaw, total] = await Promise.all([
+      MutualFundEnrollment.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      MutualFundEnrollment.countDocuments(query),
+    ]);
+
+    return res.json({
+      page,
+      pageSize: pageSize || limit,
+      limit,
+      total,
+      statusFilter: status || null,
+      search: search || null,
+      timeframe: {
+        from: from ? from.toISOString() : null,
+        to: to ? to.toISOString() : null,
+      },
+      items: itemsRaw.map(buildMutualFundEnrollmentPayload),
+    });
+  } catch (err) {
+    console.error('admin mutual fund enrollments list error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.get('/mutual-fund-enrollments/:enrollmentId', async (req, res) => {
+  try {
+    const enrollmentId = toObjectId(req.params.enrollmentId);
+    if (!enrollmentId) {
+      return res.status(400).json({ error: 'invalid_enrollment_id' });
+    }
+
+    const enrollment = await MutualFundEnrollment.findById(enrollmentId).lean();
+    if (!enrollment) {
+      return res.status(404).json({ error: 'enrollment_not_found' });
+    }
+
+    return res.json({
+      enrollment: buildMutualFundEnrollmentPayload(enrollment),
+    });
+  } catch (err) {
+    console.error('admin mutual fund enrollment detail error', err);
     return res.status(500).json({ error: 'server error' });
   }
 });

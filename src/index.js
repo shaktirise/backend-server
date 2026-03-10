@@ -24,6 +24,7 @@ import deeplinkRoutes from './routes/deeplink.js';
 import kycAadhaarRoutes from './routes/kycAadhaar.js';
 import mockKycProviderRoutes from './routes/mockKycProvider.js';
 import notificationRoutes from './routes/notifications.js';
+import mutualFundEnrollmentRoutes from './routes/mutualFundEnrollment.js';
 import Wallet from './models/Wallet.js';
 import WalletLedger from './models/WalletLedger.js';
 import { WALLET_LEDGER_TYPES } from './constants/walletLedger.js';
@@ -215,6 +216,7 @@ app.get('/', (req, res) => res.json({ ok: true, service: 'trade-advice-api', upt
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminDashboardRoutes);
+app.use('/api/mutual-fund-enrollment', mutualFundEnrollmentRoutes);
 app.use('/api/advice', adviceRoutes);
 app.use('/api/advice-v2', adviceV2Routes);
 app.use('/api/wallet', walletRoutes);
