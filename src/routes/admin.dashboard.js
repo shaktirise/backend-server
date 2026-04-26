@@ -262,6 +262,102 @@ function buildMutualFundEnrollmentPayload(doc) {
   };
 }
 
+function buildMutualFundEnrollmentQuery(rawQuery = {}, options = {}) {
+  const status = sanitizeString(rawQuery?.status, '').toUpperCase();
+  const search = sanitizeString(rawQuery?.q || rawQuery?.search, '');
+  const { from, to } = parseDateRange(rawQuery);
+  const query = {};
+
+  if (MUTUAL_FUND_ENROLLMENT_STATUS.has(status)) {
+    query.status = status;
+  }
+
+  if (search) {
+    const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(escaped, 'i');
+    query.$or = [
+      { fullName: regex },
+      { emailId: regex },
+      { mobileNumber: regex },
+      { panNumber: regex },
+      { city: regex },
+      { state: regex },
+    ];
+  }
+
+  if (from || to) {
+    query.createdAt = {};
+    if (from) query.createdAt.$gte = from;
+    if (to) query.createdAt.$lte = to;
+  }
+
+  const filledOnlyText = sanitizeString(rawQuery?.filledOnly, options.defaultFilledOnly ? 'true' : '');
+  const filledOnly =
+    filledOnlyText && ['true', '1', 'yes', 'y', 'on'].includes(filledOnlyText.toLowerCase());
+
+  return {
+    query,
+    from,
+    to,
+    search,
+    status,
+    filledOnly,
+  };
+}
+
+function filterFilledMutualFundEnrollments(items, filledOnly) {
+  if (!filledOnly) return items;
+  return items.filter((doc) => evaluateMutualFundEnrollmentCompletion(doc).isComplete);
+}
+
+function escapeCsvValue(value) {
+  if (value === null || value === undefined) return '';
+  const text =
+    value instanceof Date
+      ? value.toISOString()
+      : typeof value === 'boolean'
+        ? String(value)
+        : String(value);
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function buildMutualFundEnrollmentCsv(items) {
+  const headers = [
+    'id',
+    'status',
+    'fullName',
+    'dateOfBirth',
+    'mobileNumber',
+    'emailId',
+    'panNumber',
+    'city',
+    'state',
+    'pinCode',
+    'isNewToMutualFunds',
+    'approximateInvestmentAmount',
+    'investmentTypeInterested',
+    'preferredContactTime',
+    'consentToBeContacted',
+    'declarationDate',
+    'signatureOrDigitalConsent',
+    'completionPercent',
+    'isComplete',
+    'submittedAt',
+    'source',
+    'ipAddress',
+    'userAgent',
+    'createdAt',
+    'updatedAt',
+  ];
+
+  const rows = items.map((doc) => {
+    const payload = buildMutualFundEnrollmentPayload(doc);
+    return headers.map((key) => escapeCsvValue(payload?.[key]));
+  });
+
+  return [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
+}
+
 async function computeReferralCountsFallback(userId, depth) {
   const maxDepth = Number.isFinite(depth) && depth > 0 ? depth : 10;
   let currentIds = [userId];
@@ -675,33 +771,7 @@ router.get('/dashboard/calls', async (req, res) => {
 router.get('/mutual-fund-enrollments', async (req, res) => {
   try {
     const { page, pageSize, limit, skip } = parsePagination(req.query);
-    const { from, to } = parseDateRange(req.query);
-    const status = sanitizeString(req.query?.status, '').toUpperCase();
-    const search = sanitizeString(req.query?.q || req.query?.search, '');
-
-    const query = {};
-    if (MUTUAL_FUND_ENROLLMENT_STATUS.has(status)) {
-      query.status = status;
-    }
-
-    if (search) {
-      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(escaped, 'i');
-      query.$or = [
-        { fullName: regex },
-        { emailId: regex },
-        { mobileNumber: regex },
-        { panNumber: regex },
-        { city: regex },
-        { state: regex },
-      ];
-    }
-
-    if (from || to) {
-      query.createdAt = {};
-      if (from) query.createdAt.$gte = from;
-      if (to) query.createdAt.$lte = to;
-    }
+    const { query, from, to, status, search } = buildMutualFundEnrollmentQuery(req.query);
 
     const [itemsRaw, total] = await Promise.all([
       MutualFundEnrollment.find(query)
@@ -727,6 +797,62 @@ router.get('/mutual-fund-enrollments', async (req, res) => {
     });
   } catch (err) {
     console.error('admin mutual fund enrollments list error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.get('/mutual-fund-enrollments-filled', async (req, res) => {
+  try {
+    const { page, pageSize, limit, skip } = parsePagination(req.query);
+    const { query, from, to, status, search } = buildMutualFundEnrollmentQuery(req.query, {
+      defaultFilledOnly: true,
+    });
+
+    const itemsRaw = await MutualFundEnrollment.find(query)
+      .sort({ createdAt: -1 })
+      .lean();
+    const filledItems = filterFilledMutualFundEnrollments(itemsRaw, true);
+    const pagedItems = filledItems.slice(skip, skip + limit);
+
+    return res.json({
+      page,
+      pageSize: pageSize || limit,
+      limit,
+      total: filledItems.length,
+      statusFilter: status || null,
+      search: search || null,
+      timeframe: {
+        from: from ? from.toISOString() : null,
+        to: to ? to.toISOString() : null,
+      },
+      items: pagedItems.map(buildMutualFundEnrollmentPayload),
+    });
+  } catch (err) {
+    console.error('admin filled mutual fund enrollments list error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.get('/mutual-fund-enrollments-export', async (req, res) => {
+  try {
+    const { query, filledOnly } = buildMutualFundEnrollmentQuery(req.query, {
+      defaultFilledOnly: true,
+    });
+    const itemsRaw = await MutualFundEnrollment.find(query)
+      .sort({ createdAt: -1 })
+      .lean();
+    const exportItems = filterFilledMutualFundEnrollments(itemsRaw, filledOnly);
+    const csv = buildMutualFundEnrollmentCsv(exportItems);
+    const fileStamp = new Date().toISOString().slice(0, 10);
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=\"mutual-fund-enrollments-${fileStamp}.csv\"`
+    );
+    return res.status(200).send(csv);
+  } catch (err) {
+    console.error('admin mutual fund enrollments export error', err);
     return res.status(500).json({ error: 'server error' });
   }
 });
